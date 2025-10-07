@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Interactive Cosmic Anomaly — Audio Reactive</title>
+    <!-- Inline favicon to avoid dev-server 404 noise -->
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%94%A5%3C/text%3E%3C/svg%3E" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+      :root {
+        --glass-bg: rgba(255, 255, 255, 0.08);
+        --glass-border: rgba(255, 255, 255, 0.2);
+        --text: #ffffff;
+        --accent: #00ffff;
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #000;
+        color: var(--text);
+        font-family: 'Inter', system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, 'Apple Color Emoji', 'Segoe UI Emoji';
+      }
+      canvas { display: block; width: 100%; height: 100vh; }
+
+      @keyframes gradientBorder {
+        0% { background-position: 0% 50%; }
+        50% { background-position: 100% 50%; }
+        100% { background-position: 0% 50%; }
+      }
+
+      /* Drop overlay */
+      #drop-overlay {
+        position: fixed; inset: 0; display: none; place-items: center;
+        background: rgba(0,0,0,0.6);
+        color: #fff; z-index: 50; font-size: 24px; font-weight: 700;
+        text-shadow: 0 2px 20px rgba(0,0,0,0.8);
+      }
+      #drop-overlay.active { display: grid; }
+
+      /* Helper ribbon */
+      #helper-ribbon {
+        position: fixed; left: 50%; transform: translateX(-50%);
+        bottom: 20px; z-index: 35; pointer-events: none;
+      }
+      #helper-ribbon .bubble {
+        pointer-events: auto;
+        background: var(--glass-bg);
+        border: 1px solid var(--glass-border);
+        border-radius: 999px;
+        padding: 10px 14px; font-size: 12px; color: #e7e7e7;
+        box-shadow: 0 6px 24px rgba(0,0,0,0.4);
+      }
+      #helper-ribbon .bubble strong { color: #fff; }
+      #helper-ribbon button.link {
+        appearance: none; border: 0; background: transparent; color: var(--accent);
+        font-weight: 700; cursor: pointer; margin-left: 6px;
+      }
+
+      /* Glass toasts */
+      #toast {
+        position: fixed;
+        left: 50%;
+        bottom: 84px;
+        transform: translateX(-50%);
+        z-index: 70;
+        padding: 10px 14px;
+        border-radius: 12px;
+        border: 1px solid var(--glass-border) !important;
+        background: var(--glass-bg) !important;
+        color: #fff !important;
+        backdrop-filter: blur(10px) !important;
+        -webkit-backdrop-filter: blur(10px) !important;
+        box-shadow: 0 6px 24px rgba(0,0,0,0.4);
+        opacity: 0;
+        transition: opacity 0.25s ease;
+        pointer-events: none;
+      }
+      #toast.visible { opacity: 1; }
+      #toast::before {
+        content: '';
+        position: absolute;
+        inset: -6px;
+        z-index: -1;
+        background: linear-gradient(45deg, #00ffff, #ff1493, #4169e1, #ff69b4, #00bfff, #00ffff);
+        background-size: 400% 400%;
+        animation: gradientBorder 15s ease infinite;
+        border-radius: 16px;
+        filter: blur(10px);
+        opacity: 0.45;
+      }
+
+
+      /* New settings trigger button */
+      #open-settings-btn {
+        position: fixed; right: 20px; bottom: 20px; z-index: 45;
+        padding: 10px 12px; border-radius: 14px; border: 1px solid var(--glass-border);
+        background: var(--glass-bg); color: #fff; backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+        box-shadow: 0 8px 32px rgba(0,0,0,0.45);
+        display: inline-flex; align-items: center; gap: 10px; cursor: pointer; font-weight: 700;
+      }
+      #open-settings-btn::before {
+        content: '';
+        position: absolute; inset: -6px; z-index: -1;
+        background: linear-gradient(45deg, #00ffff, #ff1493, #4169e1, #ff69b4, #00bfff, #00ffff);
+        background-size: 400% 400%; animation: gradientBorder 15s ease infinite; border-radius: 18px; filter: blur(10px); opacity: 0.55;
+      }
+
+      /* New settings drawer */
+      #settings-root { position: fixed; inset: 0; display: none; z-index: 60; }
+      #settings-overlay { position: absolute; inset: 0; background: rgba(0,0,0,0.45); }
+      #settings-drawer {
+        position: absolute; top: 0; right: 0; width: min(420px, 92vw); height: 100%;
+        background: var(--glass-bg); border-left: 1px solid var(--glass-border);
+        backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+        box-shadow: -8px 0 32px rgba(0,0,0,0.45); transform: translateX(100%);
+        transition: transform 260ms ease;
+        display: grid; grid-template-rows: auto 1fr auto;
+      }
+      #settings-root.open #settings-drawer { transform: translateX(0); }
+      #settings-header { padding: 12px; border-bottom: 1px solid var(--glass-border); display: flex; align-items: center; justify-content: space-between; }
+      #settings-tabs { display: grid; grid-auto-flow: column; gap: 8px; overflow-x: auto; padding: 8px 12px; border-bottom: 1px solid var(--glass-border); }
+      #settings-content { overflow: auto; padding: 12px; }
+      #settings-footer { padding: 12px; border-top: 1px solid var(--glass-border); display: flex; gap: 8px; justify-content: flex-end; }
+    </style>
+  </head>
+  <body>
+    
+
+    <button id="open-settings-btn" aria-haspopup="dialog" aria-expanded="false">⚙️ Settings</button>
+
+    <div id="settings-root" role="dialog" aria-modal="true" aria-label="Settings Drawer">
+      <div id="settings-overlay"></div>
+      <div id="settings-drawer">
+        <div id="settings-header">
+          <div>Settings</div>
+          <button id="settings-close">✕</button>
+        </div>
+        <div id="settings-tabs"></div>
+        <div id="settings-content"></div>
+        <div id="settings-footer">
+          <button id="settings-reset">Reset</button>
+          <button id="settings-save-preset">Save Preset</button>
+          <button id="settings-close-footer">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="drop-overlay">Drop an audio file to visualize</div>
+
+    <div id="helper-ribbon">
+      <div class="bubble">
+        Tip: For system audio on macOS, click "System Audio" in the UI (Chrome), or use BlackHole to route output → input.
+        <button id="open-system-audio-help" class="link">Learn more</button>
+      </div>
+    </div>
+
+    <!-- iOS/Safari unlock: one-time Start Audio button (hidden after click) -->
+    <button id="start-audio-btn" style="position:fixed; inset:auto 20px 20px auto; z-index:60; padding:10px 12px; border-radius:12px; border:1px solid var(--glass-border); background: var(--glass-bg); color:#fff; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); display:none;">Start Audio</button>
+
+    <!-- Import map shim for older Safari/Firefox -->
+    <script async src="https://ga.jspm.io/npm:es-module-shims@1.10.0/dist/es-module-shims.js"></script>
+
+    <!-- three.js import map -->
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.162.0/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.162.0/examples/jsm/",
+          "postprocessing": "https://esm.sh/postprocessing@6.36.3?external=three",
+          "camera-controls": "https://esm.sh/camera-controls@2.7.4?external=three",
+          "standardized-audio-context": "https://esm.sh/standardized-audio-context@14.0.2",
+          "aubiojs": "https://esm.sh/aubiojs@0.0.8",
+          "meyda": "https://esm.sh/meyda@5.6.3"
+        }
+      }
+    </script>
+
+    <!-- App entry -->
+    <script type="module">
+      import './src/main.js';
+      // Show unlock button on iOS/Safari until first user gesture resumes audio
+      const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+      const btn = document.getElementById('start-audio-btn');
+      if (isSafari || isIOS) {
+        btn.style.display = 'block';
+        btn.addEventListener('click', async () => {
+          try {
+            const anyCtx = window.__reactiveCtxs || [];
+            for (const c of anyCtx) { await c.resume?.(); }
+          } catch(_) {}
+          btn.style.display = 'none';
+        });
+      }
+    </script>
+  </body>
+</html>
