@@ -87,4 +87,19 @@ export function showToast(message, durationMs = 3000) {
   if (typeof window !== 'undefined') window.__toastTimer = toastTimer;
 }
 
-
+/**
+ * Cleanup toast resources.
+ *
+ * Clears the active toast timer to prevent memory leaks.
+ * This should be called when the application is shutting down.
+ */
+export function cleanupToast() {
+  try {
+    clearTimeout(toastTimer);
+    toastTimer = null;
+    if (typeof window !== 'undefined') {
+      clearTimeout(window.__toastTimer);
+      delete window.__toastTimer;
+    }
+  } catch (_) {}
+}

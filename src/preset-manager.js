@@ -692,6 +692,35 @@ export class PresetManager {
       console.info('[PresetManager]', action, detail || {});
     } catch (_) {}
   }
+
+  /**
+   * Dispose and cleanup preset manager resources.
+   *
+   * This method properly cleans up the PresetManager to prevent memory leaks:
+   * - Clears all event listeners
+   * - Removes references to scene and audio engine
+   *
+   * Call this when the application is shutting down.
+   */
+  dispose() {
+    // Clear all event listeners
+    if (this._listeners) {
+      this._listeners.clear();
+      this._listeners = null;
+    }
+
+    // Clear references
+    this.sceneApi = null;
+    this.audioEngine = null;
+    this.storage = null;
+    this._previousSnapshot = null;
+    this._compareSnapshot = null;
+
+    // Remove global reference
+    if (typeof window !== 'undefined') {
+      delete window.__presetManager;
+    }
+  }
 }
 
 function getByPath(obj, path) {

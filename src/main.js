@@ -25,7 +25,7 @@ import { AudioEngine } from './audio.js';          // Audio analysis and process
 import { initSettingsUI } from './settings-ui.js'; // Settings panel UI
 import { SyncCoordinator } from './sync.js';      // Multi-window synchronization
 import { printFeatureMatrix } from './feature.js'; // Browser capability detection
-import { showToast } from './toast.js';           // Temporary notification messages
+import { showToast, cleanupToast } from './toast.js';           // Temporary notification messages
 import { PresetManager } from './preset-manager.js';
 import { openPresetLibraryWindow } from './preset-library-window.js';
 import { PerformanceController } from './performance-pads.js';
@@ -77,8 +77,8 @@ try {
   performancePads = { update: () => {}, getDeltas: () => null };
 }
 
-
-window.addEventListener('keydown', (event) => {
+// Handler for 'L' key to open preset library
+eventHandlers.presetLibraryKey = (event) => {
   if (event.defaultPrevented) return;
   if (event.repeat) return;
   const key = event.key || '';
@@ -88,7 +88,8 @@ window.addEventListener('keydown', (event) => {
   if (['input', 'textarea', 'select', 'button'].includes(tag)) return;
   event.preventDefault();
   openPresetLibrary();
-});
+};
+window.addEventListener('keydown', eventHandlers.presetLibraryKey);
 
 // Initialize the settings UI
 // This creates the settings panel that slides in from the right side
@@ -336,6 +337,7 @@ const eventHandlers = {
   drop: null,
   dropHandler: null,
   systemAudioHelp: null,
+  presetLibraryKey: null,
 };
 
 // Handle window resize - update the 3D scene to match new window size
@@ -748,8 +750,27 @@ async function cleanup() {
     if (eventHandlers.systemAudioHelp && systemAudioHelpBtn) {
       systemAudioHelpBtn.removeEventListener('click', eventHandlers.systemAudioHelp);
     }
+    if (eventHandlers.presetLibraryKey) {
+      window.removeEventListener('keydown', eventHandlers.presetLibraryKey);
+    }
   } catch (e) {
     console.error('Error removing event listeners:', e);
+  }
+
+  // Dispose preset manager
+  try {
+    if (presetManager && typeof presetManager.dispose === 'function') {
+      presetManager.dispose();
+    }
+  } catch (e) {
+    console.error('Error disposing preset manager:', e);
+  }
+
+  // Clean up toast timer
+  try {
+    cleanupToast();
+  } catch (e) {
+    console.error('Error cleaning up toast:', e);
   }
 
   console.log('Cleanup complete');

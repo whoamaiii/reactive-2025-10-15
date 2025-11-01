@@ -1773,9 +1773,14 @@ export function initSettingsUI({ sceneApi, audioEngine, presetManager, onScreens
         const data = JSON.stringify(presetManager.exportState(), null, 2);
         const blob = new Blob([data], { type: 'application/json' });
         const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
+        const url = URL.createObjectURL(blob);
+        a.href = url;
         a.download = 'preset-library.json';
+        document.body.appendChild(a);
         a.click();
+        document.body.removeChild(a);
+        // Clean up blob URL to prevent memory leak
+        setTimeout(() => URL.revokeObjectURL(url), 100);
       } catch (err) {
         console.error(err);
         showToast('Export failed');
@@ -2209,6 +2214,12 @@ export function initSettingsUI({ sceneApi, audioEngine, presetManager, onScreens
    * Removes event listeners and clears references to prevent memory leaks.
    */
   function dispose() {
+    // Clear shader HUD timer
+    if (shaderHudTimer) {
+      clearTimeout(shaderHudTimer);
+      shaderHudTimer = null;
+    }
+
     // Remove window-level event listener
     if (handleGlobalKeydown) {
       window.removeEventListener('keydown', handleGlobalKeydown);
