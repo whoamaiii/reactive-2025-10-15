@@ -285,7 +285,7 @@ export class PerformanceController {
 
   _installKeyHandlers() {
     const isEditableTarget = (ev) => {
-      const tag = (ev.target && ev.target.tagName || '').toLowerCase();
+      const tag = (ev.target?.tagName ?? '').toLowerCase();
       return ['input', 'textarea', 'select', 'button'].includes(tag) || ev.isComposing;
     };
 

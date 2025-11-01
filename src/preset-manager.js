@@ -187,7 +187,13 @@ const DEFAULT_PRESETS = [
 ];
 
 function deepClone(value) {
-  return value === null || value === undefined ? value : JSON.parse(JSON.stringify(value));
+  if (value === null || value === undefined) return value;
+  try {
+    if (typeof structuredClone === 'function') return structuredClone(value);
+  } catch (_) {
+    // structuredClone not available or failed, fall back to JSON
+  }
+  return JSON.parse(JSON.stringify(value));
 }
 
 function createEmptyState() {
