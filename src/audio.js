@@ -30,6 +30,11 @@ import { loadAubio, loadMeyda } from './lazy.js';
 import { showToast } from './toast.js';
 
 /**
+ * Cache for the beat detector function to avoid re-loading from CDN
+ */
+let _guessBpmFn = null;
+
+/**
  * Lazy-load web-audio-beat-detector at runtime with graceful fallbacks.
  * 
  * Instead of bundling this library (which can fail to load from CDNs), we load it
@@ -512,7 +517,18 @@ export class AudioEngine {
     if (this.workletNode) {
       try { this.workletNode.port.postMessage({ type: 'reset' }); } catch (_) {}
     }
-    
+
+    // Terminate Essentia worker to prevent memory leak
+    if (this._essentiaWorker) {
+      try {
+        this._essentiaWorker.terminate();
+      } catch (_) {}
+      this._essentiaWorker = null;
+      this._essentiaReady = false;
+      this._essentiaReadyPromise = null;
+      this._essentiaReadyResolver = null;
+    }
+
     // Don't clear BPM immediately; allow UI to still show last known value
   }
 

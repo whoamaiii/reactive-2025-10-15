@@ -221,9 +221,9 @@ function ensureFeatureWs(nowMs) {
   
   // Rate limit: don't try too often (respect backoff delay)
   if (nowMs && nowMs - featureWsLastAttemptMs < featureWsBackoffMs) return;
-  
-  // Record this attempt
-  featureWsLastAttemptMs = nowMs || performance.now();
+
+  // Record this attempt (use proper type check to handle 0 as valid timestamp)
+  featureWsLastAttemptMs = typeof nowMs === 'number' ? nowMs : performance.now();
   
   try {
     featureWsConnecting = true;
