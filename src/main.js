@@ -247,9 +247,11 @@ function ensureFeatureWs(nowMs) {
       featureWsBackoffMs = Math.min(20000, Math.max(2500, featureWsBackoffMs * 1.6));
     };
     
-    // Connection error - close it cleanly
-    ws.onerror = () => { 
-      try { ws.close(); } catch(_) {} 
+    // Connection error - close it cleanly and reset state
+    ws.onerror = () => {
+      featureWsConnected = false;
+      featureWsConnecting = false;
+      try { ws.close(); } catch(_) {}
     };
     
     featureWs = ws;

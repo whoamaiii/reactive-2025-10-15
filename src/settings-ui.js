@@ -447,7 +447,9 @@ export function initSettingsUI({ sceneApi, audioEngine, presetManager, onScreens
   overlay.addEventListener('click', close);
   btnClose.addEventListener('click', close);
   btnCloseFooter.addEventListener('click', close);
-  window.addEventListener('keydown', (e) => {
+
+  // Define named handler to prevent duplicate listeners
+  const handleGlobalKeydown = (e) => {
     if (e.defaultPrevented) return;
     if (e.key === 'Escape') close();
     if ((e.key === 's' || e.key === 'S') && !e.metaKey && !e.ctrlKey && !e.altKey) {
@@ -457,7 +459,11 @@ export function initSettingsUI({ sceneApi, audioEngine, presetManager, onScreens
       const help = ensureHotkeyHelp();
       help.style.display = help.style.display === 'block' ? 'none' : 'block';
     }
-  });
+  };
+
+  // Remove before adding to prevent duplicates if initSettingsUI is called multiple times
+  window.removeEventListener('keydown', handleGlobalKeydown);
+  window.addEventListener('keydown', handleGlobalKeydown);
 
   // Helpers: showToast centralized in toast.js
 
@@ -2080,6 +2086,9 @@ export function initSettingsUI({ sceneApi, audioEngine, presetManager, onScreens
   } catch(_) {}
 
   render('quick');
+
+  // Remove before adding to prevent duplicates if initSettingsUI is called multiple times
+  window.removeEventListener('keydown', handleShaderHotkeys, true);
   window.addEventListener('keydown', handleShaderHotkeys, true);
 
   // external labels update (FPS etc.)

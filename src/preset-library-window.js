@@ -287,6 +287,13 @@ export class PresetLibraryWindow {
       detail.appendChild(doc.createTextNode('Select a preset to see details.'));
       return;
     }
+
+    // Defensive check: ensure preset has required properties before rendering
+    if (!preset.name || !preset.createdAt || !preset.updatedAt) {
+      detail.appendChild(doc.createTextNode('Preset data incomplete.'));
+      return;
+    }
+
     const title = doc.createElement('div');
     title.className = 'pl-detail-title';
     title.textContent = preset.name;
