@@ -187,7 +187,13 @@ const DEFAULT_PRESETS = [
 ];
 
 function deepClone(value) {
-  return value == null ? value : JSON.parse(JSON.stringify(value));
+  if (value === null || value === undefined) return value;
+  try {
+    if (typeof structuredClone === 'function') return structuredClone(value);
+  } catch (_) {
+    // structuredClone not available or failed, fall back to JSON
+  }
+  return JSON.parse(JSON.stringify(value));
 }
 
 function createEmptyState() {
@@ -699,7 +705,7 @@ function setByPath(obj, path, value) {
   let cursor = obj;
   for (let i = 0; i < keys.length - 1; i += 1) {
     const key = keys[i];
-    if (cursor[key] == null || typeof cursor[key] !== 'object') cursor[key] = {};
+    if (cursor[key] === null || cursor[key] === undefined || typeof cursor[key] !== 'object') cursor[key] = {};
     cursor = cursor[key];
   }
   cursor[keys[keys.length - 1]] = value;

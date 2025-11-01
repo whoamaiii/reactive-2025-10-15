@@ -1181,7 +1181,7 @@ export function initScene() {
     state._beatsPerBar = beatsPerBar;
     let downbeatPulse = 0;
     if (isBeat) {
-      if (state._beatIndex == null || state._beatIndex < 0 || state._beatIndex >= beatsPerBar) {
+      if (state._beatIndex === null || state._beatIndex < 0 || state._beatIndex >= beatsPerBar) {
         state._beatIndex = 0;
         downbeatPulse = 1;
       } else {

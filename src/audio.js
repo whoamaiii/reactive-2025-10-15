@@ -1899,7 +1899,7 @@ export class AudioEngine {
         }
         // Maintain bar-phase state for optional drop gating
         if (this.dropBarGatingEnabled) {
-          if (this._beatIndexForDrop == null || this._beatIndexForDrop < 0) {
+          if (this._beatIndexForDrop === null || this._beatIndexForDrop === undefined || this._beatIndexForDrop < 0) {
             this._beatIndexForDrop = 0; // treat this beat as downbeat
           } else {
             const nBeats = Math.max(1, Math.floor(this.dropGateBeatsPerBar || 4));
@@ -1919,7 +1919,7 @@ export class AudioEngine {
         if (this.dropBarGatingEnabled) {
           if (this.isPlayingFile && this.beatGrid && Array.isArray(this.beatGrid.downbeats) && this.beatGrid.downbeats.length) {
             const nowSec = this._getPlaybackTimeSeconds();
-            passesGating = nowSec != null ? this._isNearDownbeat(nowSec, this.dropDownbeatGateToleranceMs) : false;
+            passesGating = nowSec !== null && nowSec !== undefined ? this._isNearDownbeat(nowSec, this.dropDownbeatGateToleranceMs) : false;
           } else {
             passesGating = (this._beatIndexForDrop === 0);
           }

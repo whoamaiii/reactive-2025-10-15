@@ -15,10 +15,10 @@ function generateId() {
 function deepClone(value) {
   try {
     if (typeof structuredClone === 'function') return structuredClone(value);
-    return JSON.parse(JSON.stringify(value));
   } catch (_) {
-    return JSON.parse(JSON.stringify(value));
+    // structuredClone not available or failed, fall back to JSON
   }
+  return JSON.parse(JSON.stringify(value));
 }
 
 function deepMerge(target, source) {

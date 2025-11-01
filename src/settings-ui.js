@@ -479,7 +479,7 @@ export function initSettingsUI({ sceneApi, audioEngine, presetManager, onScreens
     }
     if (!Array.isArray(children)) children = [children];
     for (const c of children) {
-      if (c == null) continue;
+      if (c === null || c === undefined) continue;
       if (typeof c === 'string') el.appendChild(document.createTextNode(c));
       else el.appendChild(c);
     }
@@ -2111,7 +2111,7 @@ export function initSettingsUI({ sceneApi, audioEngine, presetManager, onScreens
     const confidence = isObj ? info.confidence : undefined;
     const source = isObj ? info.source : undefined;
     const bpmNode = document.getElementById('auto-bpm');
-    if (bpmNode) bpmNode.textContent = String(Math.round(bpm || 0));
+    if (bpmNode) bpmNode.textContent = String(Math.round(bpm ?? 0));
     if (typeof confidence === 'number') {
       const confNode = document.getElementById('auto-bpm-conf');
       if (confNode) confNode.textContent = Number.isFinite(confidence) ? confidence.toFixed(2) : '0.00';
@@ -2155,13 +2155,13 @@ export function initSettingsUI({ sceneApi, audioEngine, presetManager, onScreens
   }
   function updateTapAndDrift({ tapBpm, bpm }) {
     const t = document.getElementById('tap-bpm');
-    if (t && typeof tapBpm === 'number') t.textContent = String(Math.round(tapBpm || 0));
+    if (t && typeof tapBpm === 'number') t.textContent = String(Math.round(tapBpm ?? 0));
     const a = document.getElementById('auto-bpm');
-    if (a && typeof bpm === 'number') a.textContent = String(Math.round(bpm || 0));
+    if (a && typeof bpm === 'number') a.textContent = String(Math.round(bpm ?? 0));
   }
   function updateDriftDetails({ tapBpm, beatGrid, aubioTempo, aubioConf }) {
     const lb = document.getElementById('live-bpm');
-    if (lb && typeof aubioTempo === 'number') lb.textContent = String(Math.round(aubioTempo || 0));
+    if (lb && typeof aubioTempo === 'number') lb.textContent = String(Math.round(aubioTempo ?? 0));
     const lc = document.getElementById('live-conf');
     if (lc && typeof aubioConf === 'number') lc.textContent = (aubioConf || 0).toFixed(2);
   }

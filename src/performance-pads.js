@@ -285,7 +285,7 @@ export class PerformanceController {
 
   _installKeyHandlers() {
     const isEditableTarget = (ev) => {
-      const tag = (ev.target && ev.target.tagName || '').toLowerCase();
+      const tag = (ev.target?.tagName ?? '').toLowerCase();
       return ['input', 'textarea', 'select', 'button'].includes(tag) || ev.isComposing;
     };
 
@@ -432,19 +432,23 @@ export class PerformanceController {
 
   _installHud() {
     try {
-      const style = document.createElement('style');
-      style.textContent = `
-        #perf-hud { position: fixed; left: 20px; bottom: 20px; z-index: 46; display: grid; gap: 8px; color: #fff; font: 600 12px Inter, system-ui, sans-serif; pointer-events: none; }
-        #perf-hud .row { display: flex; align-items: center; gap: 10px; opacity: 0.85; }
-        #perf-hud .mode { padding: 8px 10px; border-radius: 12px; border:1px solid rgba(255,255,255,0.2); background: rgba(255,255,255,0.08); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); pointer-events: auto; }
-        #perf-hud .pads { display: flex; gap: 8px; }
-        #perf-hud .pad { width: 26px; height: 26px; border-radius: 50%; border:1px solid rgba(255,255,255,0.25); background: rgba(255,255,255,0.06); position: relative; pointer-events: auto; cursor: default; }
-        #perf-hud .pad::after { content: ''; position: absolute; inset: 3px; border-radius: 50%; background: linear-gradient(180deg, #00ffff, #ff6ad5); transform: scale(var(--fill, 0)); transform-origin: center; transition: transform 90ms linear; opacity: 0.9; }
-        #perf-hud .label { opacity: 0.85; }
-        #perf-hud.on .mode { border-color: #00ffff; }
-        #perf-hud .pad.active { box-shadow: 0 0 12px rgba(0,255,255,0.35) inset; }
-      `;
-      document.head.appendChild(style);
+      // Only inject styles once to prevent duplicates
+      if (!document.getElementById('perf-hud-styles')) {
+        const style = document.createElement('style');
+        style.id = 'perf-hud-styles';
+        style.textContent = `
+          #perf-hud { position: fixed; left: 20px; bottom: 20px; z-index: 46; display: grid; gap: 8px; color: #fff; font: 600 12px Inter, system-ui, sans-serif; pointer-events: none; }
+          #perf-hud .row { display: flex; align-items: center; gap: 10px; opacity: 0.85; }
+          #perf-hud .mode { padding: 8px 10px; border-radius: 12px; border:1px solid rgba(255,255,255,0.2); background: rgba(255,255,255,0.08); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); pointer-events: auto; }
+          #perf-hud .pads { display: flex; gap: 8px; }
+          #perf-hud .pad { width: 26px; height: 26px; border-radius: 50%; border:1px solid rgba(255,255,255,0.25); background: rgba(255,255,255,0.06); position: relative; pointer-events: auto; cursor: default; }
+          #perf-hud .pad::after { content: ''; position: absolute; inset: 3px; border-radius: 50%; background: linear-gradient(180deg, #00ffff, #ff6ad5); transform: scale(var(--fill, 0)); transform-origin: center; transition: transform 90ms linear; opacity: 0.9; }
+          #perf-hud .label { opacity: 0.85; }
+          #perf-hud.on .mode { border-color: #00ffff; }
+          #perf-hud .pad.active { box-shadow: 0 0 12px rgba(0,255,255,0.35) inset; }
+        `;
+        document.head.appendChild(style);
+      }
 
       const root = document.createElement('div');
       root.id = 'perf-hud';
