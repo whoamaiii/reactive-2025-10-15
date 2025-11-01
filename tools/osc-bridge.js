@@ -13,6 +13,8 @@
     WS_HOST, WS_PORT, OSC_HOST, OSC_PORT
 */
 
+// Load environment variables from .env if present (tools directory)
+try { require('dotenv').config(); } catch (_) {}
 const WebSocket = require('ws');
 const osc = require('osc');
 
@@ -20,6 +22,7 @@ const WS_HOST = process.env.WS_HOST || '127.0.0.1';
 const WS_PORT = parseInt(process.env.WS_PORT || '8090', 10);
 const OSC_HOST = process.env.OSC_HOST || '127.0.0.1';
 const OSC_PORT = parseInt(process.env.OSC_PORT || '9000', 10);
+const HEARTBEAT_MS = parseInt(process.env.BRIDGE_HEARTBEAT_MS || '5000', 10);
 
 const udpPort = new osc.UDPPort({ localAddress: '0.0.0.0', localPort: 0, remoteAddress: OSC_HOST, remotePort: OSC_PORT });
 udpPort.on('ready', () => {
@@ -29,12 +32,15 @@ udpPort.on('error', (e) => console.error('[OSC] error', e));
 udpPort.open();
 
 const wss = new WebSocket.Server({ host: WS_HOST, port: WS_PORT });
+const clients = new Set();
 wss.on('listening', () => {
   console.log(`[WS] listening on ws://${WS_HOST}:${WS_PORT}`);
+  console.log(`[CFG] OSC → ${OSC_HOST}:${OSC_PORT} | Heartbeat ${HEARTBEAT_MS}ms`);
 });
 wss.on('connection', (ws, req) => {
   const ip = req.socket.remoteAddress;
   console.log(`[WS] client connected from ${ip}`);
+  clients.add(ws);
   ws.on('message', (data) => {
     let msg;
     try {
@@ -53,6 +59,8 @@ wss.on('connection', (ws, req) => {
     send('/reactive/fluxMean', f.fluxMean || 0);
     send('/reactive/fluxStd', f.fluxStd || 0);
     send('/reactive/bpm', f.bpm || 0);
+    send('/reactive/bpm/conf', f.bpmConfidence || 0);
+    if (f.bpmSource) send('/reactive/bpm/source', f.bpmSource);
     send('/reactive/tapBpm', f.tapBpm || 0);
     send('/reactive/pitchHz', f.pitchHz || 0);
     send('/reactive/pitchConf', f.pitchConf || 0);
@@ -101,7 +109,7 @@ wss.on('connection', (ws, req) => {
       send('/reactive/beatGrid/conf', bg.confidence || 0);
     }
   });
-  ws.on('close', () => console.log('[WS] client disconnected'));
+  ws.on('close', () => { clients.delete(ws); console.log('[WS] client disconnected'); });
 });
 
 function send(address, ...args) {
@@ -118,5 +126,12 @@ function toOscArg(v) {
   return { type: 's', value: String(v ?? '') };
 }
 
+// Periodic heartbeat / health summary
+setInterval(() => {
+  try {
+    const connectedClients = Array.from(clients).filter(c => c.readyState === c.OPEN).length;
+    console.log(`[HEARTBEAT] WS clients=${connectedClients}`);
+  } catch (_) {}
+}, HEARTBEAT_MS);
 
 

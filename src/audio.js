@@ -1,10 +1,46 @@
+/**
+ * Audio Engine
+ *
+ * This is the core audio processing system that analyzes audio input and extracts
+ * musical features. Think of it like a music analyst that listens to audio and tells
+ * you things like "there's a beat here", "this is a bass sound", "the tempo is 128 BPM".
+ *
+ * What this file does:
+ * 1. Captures audio from various sources (microphone, system audio, audio files)
+ * 2. Processes audio using FFT (Fast Fourier Transform) to analyze frequencies
+ * 3. Extracts features like beats, tempo, pitch, frequency bands, spectral characteristics
+ * 4. Provides real-time analysis that updates every frame
+ * 5. Integrates with external libraries (Aubio, Meyda, Essentia) for advanced analysis
+ *
+ * Key Concepts:
+ * - RMS (Root Mean Square): Overall volume/energy level
+ * - Frequency Bands: Dividing audio into bass, mid, treble ranges
+ * - Spectral Flux: How quickly frequencies are changing (used for beat detection)
+ * - BPM (Beats Per Minute): Tempo detection
+ * - AudioWorklet: Advanced audio processing in a separate thread for better performance
+ *
+ * Data Flow:
+ * - Audio input → AudioContext → AnalyserNode → Feature extraction → Features object
+ * - Features are used by the 3D scene to animate visuals
+ * - Features are also sent to TouchDesigner via WebSocket
+ */
+
 import { AudioContext as StdAudioContext } from 'standardized-audio-context';
 import { loadAubio, loadMeyda } from './lazy.js';
+import { showToast } from './toast.js';
 
-// Lazy-load web-audio-beat-detector at runtime with graceful fallbacks.
-// Static importing from a CDN can 404 and break the entire app. This keeps the UI alive.
-let _guessBpmFn = null;
+/**
+ * Lazy-load web-audio-beat-detector at runtime with graceful fallbacks.
+ * 
+ * Instead of bundling this library (which can fail to load from CDNs), we load it
+ * dynamically when needed. This keeps the app working even if the CDN is down.
+ * 
+ * We try multiple CDN sources to increase reliability.
+ * 
+ * @returns {Promise<Function>} A promise that resolves to the BPM detection function
+ */
 async function getBeatDetectorGuess() {
+  // If we've already loaded it, return the cached function
   if (_guessBpmFn) return _guessBpmFn;
   const candidates = [
     'https://esm.sh/web-audio-beat-detector@6.3.2',
@@ -31,20 +67,42 @@ async function getBeatDetectorGuess() {
     }
   }
   // Final fallback: no-op estimator that resolves to null bpm
+  // This ensures the app continues working even if all CDNs fail
   _guessBpmFn = async () => ({ bpm: null });
   return _guessBpmFn;
 }
 
+/**
+ * AudioEngine Class
+ * 
+ * The main class that handles all audio processing and feature extraction.
+ * This is instantiated once in main.js and used throughout the application.
+ * 
+ * Main responsibilities:
+ * - Setup and manage AudioContext (the audio processing environment)
+ * - Capture audio from microphone, system audio, or files
+ * - Analyze audio in real-time using FFT and various algorithms
+ * - Extract musical features (beats, tempo, frequency bands, pitch, etc.)
+ * - Integrate with external analysis libraries (Aubio, Meyda, Essentia)
+ * - Provide features to the 3D scene for visual animation
+ */
 export class AudioEngine {
+  /**
+   * Constructor - Initializes all audio processing state variables.
+   * 
+   * Sets up defaults for all the analysis parameters and state tracking.
+   * The actual audio context and nodes are created lazily when audio starts.
+   */
   constructor() {
-    this.ctx = null;
-    this.source = null; // MediaStreamAudioSourceNode or AudioBufferSourceNode
-    this.gainNode = null;
-    this.analyser = null;
-    this.fftSize = 2048;
-    this.freqData = null;
-    this.timeData = null;
-    this.sampleRate = 48000;
+    // Core audio nodes (created when ensureContext() is called)
+    this.ctx = null;                    // AudioContext - the audio processing environment
+    this.source = null;                 // MediaStreamAudioSourceNode or AudioBufferSourceNode - the audio input
+    this.gainNode = null;               // GainNode - controls volume
+    this.analyser = null;               // AnalyserNode - extracts frequency and time domain data
+    this.fftSize = 2048;                // FFT size - determines frequency resolution (higher = more detail, more CPU)
+    this.freqData = null;               // Uint8Array - frequency data (0-255 for each frequency bin)
+    this.timeData = null;               // Uint8Array - waveform data (0-255 for each sample)
+    this.sampleRate = 48000;            // Audio sample rate (samples per second)
 
     // Feature extraction state
     this.prevMag = null; // previous normalized magnitude spectrum (Float32)
@@ -54,6 +112,12 @@ export class AudioEngine {
     this.smoothing = 0.55; // EMA smoothing for RMS/bands (rave tuned)
     this.bandSplit = { sub: 90, low: 180, mid: 2500 }; // Hz (rave tuned)
     this.beatCooldownMs = 350;
+    // Beat gating & noise gate (production-hardening)
+    this.beatRefractoryMs = 350; // minimum time between beats (ms)
+    this.beatEnergyFloor = 0.28; // 0..1 energy floor on bass env to accept beat
+    this.noiseGateEnabled = false; // attenuate low-level noise before extraction
+    this.noiseGateThreshold = 0.10; // 0..1 amplitude/energy threshold for gate
+    this._noiseGateCalibrating = false; // guard concurrent calibrations
     this._lastBeatMs = -99999;
 
     this.levels = { rms: 0, rmsEMA: 0, bands: { bass: 0, mid: 0, treble: 0 }, bandsEMA: { bass: 0, mid: 0, treble: 0 }, centroid: 0, centroidEMA: 0 };
@@ -80,6 +144,30 @@ export class AudioEngine {
     this._centroidSlopeAlpha = 0.6; // EMA factor
     this._lastDropMs = -99999;
 
+    // Optional: gate drops to bar downbeats
+    this.dropBarGatingEnabled = false;
+    this.dropGateBeatsPerBar = 4;
+    this._beatIndexForDrop = -1;
+    this.dropDownbeatGateToleranceMs = 80; // how close to a downbeat to allow drop
+
+    // Bass-only spectral flux (for build detection)
+    this.dropUseBassFlux = false; // can be enabled via presets (Rave Mode)
+    this.bassFluxHistory = [];
+    this.bassFluxWindow = 43;
+    this._prevMagBass = null;
+
+    // Adaptive thresholds (learn per-track in warmup period)
+    this.autoDropThresholdsEnabled = false;
+    this.autoDropCalDurationMs = 25000;
+    this._autoThrStartMs = 0;
+    this._autoThrApplied = false;
+    this._autoBassOnBeats = [];
+    this._autoCentroidNegOnBeats = [];
+
+    // File playback timeline tracking (for downbeat gating)
+    this._fileStartCtxTimeSec = 0;
+    this._fileDurationSec = 0;
+
     this.timeDataFloat = null;
 
     this._meydaPromise = null;
@@ -87,6 +175,7 @@ export class AudioEngine {
     this._meydaLastExtract = 0;
     this._meydaIntervalMs = 1000 / 75; // ~75 Hz refresh
     this._meydaSmoothing = 0.65;
+    this.lowCpuMode = false;
     this.meydaFeatures = {
       mfcc: new Array(13).fill(0.5),
       chroma: new Array(12).fill(0),
@@ -142,6 +231,8 @@ export class AudioEngine {
 
     // Tempo assist (optional, for file playback)
     this.bpmEstimate = null; // number | null
+    this.bpmEstimateConfidence = 0;
+    this.bpmEstimateSource = null;
     this.tempoAssistEnabled = false;
     this.tempoIntervalMs = 0;
     this._lastTempoMs = 0;
@@ -164,47 +255,71 @@ export class AudioEngine {
     // Webcam feature removed
   }
 
+  /**
+   * Ensures the audio context and analysis nodes are created and ready.
+   * 
+   * This is called automatically before starting any audio source.
+   * Creates the AudioContext, GainNode, AnalyserNode, and sets up the audio graph.
+   * Also attempts to initialize AudioWorklet for better performance.
+   * 
+   * Exposes the context to window.__reactiveCtxs for Safari/iOS unlock helper.
+   * 
+   * @returns {Promise<void>} Resolves when context is ready
+   */
   async ensureContext() {
+    // Create AudioContext if it doesn't exist
     if (!this.ctx) {
       let Ctor = StdAudioContext;
       if (typeof Ctor !== 'function') {
-        // Fallback to native contexts
+        // Fallback to native contexts if standardized-audio-context isn't available
         Ctor = window.AudioContext || window.webkitAudioContext;
       }
       this.ctx = new Ctor();
       this.sampleRate = this.ctx.sampleRate;
+      
       // Expose for Safari/iOS unlock helper to resume
+      // Safari requires a user gesture to start audio, so we store contexts globally
       try {
         window.__reactiveCtxs = window.__reactiveCtxs || [];
         if (!window.__reactiveCtxs.includes(this.ctx)) window.__reactiveCtxs.push(this.ctx);
       } catch(_) {}
     }
+    
     // Try to resume context on user gestures; harmless if already running
+    // Some browsers suspend audio contexts until user interaction
     try {
       if (this.ctx && this.ctx.state !== 'running') {
         await this.ctx.resume();
       }
     } catch(_) {}
+    
+    // Create gain node (volume control)
     if (!this.gainNode) {
       this.gainNode = this.ctx.createGain();
-      this.gainNode.gain.value = 1.0;
+      this.gainNode.gain.value = 1.0; // Default: full volume
     }
+    
+    // Create analyser node (extracts frequency and time domain data)
     if (!this.analyser) {
       this.analyser = this.ctx.createAnalyser();
       this.analyser.fftSize = this.fftSize;
-      this.analyser.smoothingTimeConstant = 0.5;
+      this.analyser.smoothingTimeConstant = 0.5; // Smooths frequency data over time
       this.freqData = new Uint8Array(this.analyser.frequencyBinCount);
       this.timeData = new Uint8Array(this.analyser.fftSize);
       this.timeDataFloat = new Float32Array(this.analyser.fftSize);
     }
 
+    // Connect audio graph: source → gain → worklet (optional) → analyser
     if (!this._graphConnected && this.gainNode && this.analyser) {
       this._ensureGraph();
       this._graphConnected = true;
     }
 
+    // Initialize AudioWorklet if available (for better performance)
     await this._maybeInitWorklet();
+    
     // Ensure live ring buffer exists once we know actual sampleRate
+    // This buffer stores recent audio for BPM recalculation on live sources
     this._ensureLiveBuffer();
   }
 
@@ -213,14 +328,41 @@ export class AudioEngine {
     return devices.filter(d => d.kind === 'audioinput');
   }
 
+  /**
+   * Start capturing audio from the microphone.
+   * 
+   * Requests microphone access from the browser and starts capturing audio.
+   * Stops any existing audio source first.
+   * 
+   * Note: Requires HTTPS or localhost (secure origin) for browser security.
+   * 
+   * @param {string} [deviceId] - Optional device ID from getInputDevices(). If not provided, uses default device.
+   * @returns {Promise<MediaStream>} The audio stream
+   * @throws {Error} If getUserMedia is unavailable or permission is denied
+   */
   async startMic(deviceId) {
     await this.ensureContext();
-    this.stop();
+    this.stop(); // Stop any existing audio source
+    
+    // Check if getUserMedia is available (requires secure origin)
     if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
-      this._showToast('Mic requires a secure origin (https or http://localhost).');
+      showToast('Mic requires a secure origin (https or http://localhost).');
       throw new Error('getUserMedia unavailable');
     }
-    const constraints = { audio: { deviceId: deviceId ? { exact: deviceId } : undefined, echoCancellation: false, noiseSuppression: false, autoGainControl: false } };
+    
+    // Configure audio constraints
+    // Disable echo cancellation, noise suppression, and auto gain control
+    // to get raw audio for music analysis
+    const constraints = { 
+      audio: { 
+        deviceId: deviceId ? { exact: deviceId } : undefined, // Use specific device or default
+        echoCancellation: false,   // Disabled for music analysis
+        noiseSuppression: false,    // Disabled for music analysis
+        autoGainControl: false      // Disabled for music analysis
+      } 
+    };
+    
+    // Request microphone access
     const stream = await navigator.mediaDevices.getUserMedia(constraints);
     this._useStream(stream);
     return stream;
@@ -240,13 +382,16 @@ export class AudioEngine {
       const md = (typeof navigator !== 'undefined') ? navigator.mediaDevices : null;
       const rawGetDisplay = (md && md.getDisplayMedia) || (typeof navigator !== 'undefined' ? navigator.getDisplayMedia : null);
       // Debug info to aid environment diagnosis without breaking UX
-      try { console.info('DisplayMedia support:', { hasMediaDevices: !!md, hasGetDisplayMedia: !!(md && md.getDisplayMedia), hasLegacyGetDisplayMedia: !!(navigator && navigator.getDisplayMedia), protocol: location.protocol, host: location.hostname }); } catch(_) {}
+      try {
+        const isDebug = new URLSearchParams(location.search || '').has('debug');
+        if (isDebug) console.info('DisplayMedia support:', { hasMediaDevices: !!md, hasGetDisplayMedia: !!(md && md.getDisplayMedia), hasLegacyGetDisplayMedia: !!(navigator && navigator.getDisplayMedia), protocol: location.protocol, host: location.hostname });
+      } catch(_) {}
       if (!rawGetDisplay) {
         const ua = (navigator.userAgent || '').toLowerCase();
         const isChromium = ua.includes('chrome') || ua.includes('edg') || ua.includes('brave');
         const hostOk = (location.protocol === 'https:') || (location.hostname === 'localhost') || (location.hostname === '127.0.0.1');
         const hint = !isChromium ? 'Open in Chrome and try "Tab (Chrome)".' : (!hostOk ? 'Use https or http://localhost.' : '');
-        this._showToast(`System/Tab capture unavailable. ${hint}`.trim());
+        showToast(`System/Tab capture unavailable. ${hint}`.trim());
         throw new Error('getDisplayMedia unavailable');
       }
       // Chrome tab/window/screen capture. On macOS, this usually only provides tab audio.
@@ -257,7 +402,7 @@ export class AudioEngine {
         const msg = isMac
           ? 'No audio captured. In Chrome, pick a "Chrome Tab" and enable "Share tab audio". For full Mac audio, use BlackHole and select it as Mic.'
           : 'No audio captured. Choose a tab with audio and enable audio sharing.';
-        this._showToast(msg);
+        showToast(msg);
         const err = new Error('No audio track captured from display media');
         try { err.__reactiveNotified = true; } catch(_) {}
         throw err;
@@ -272,19 +417,19 @@ export class AudioEngine {
         let notified = false;
         if (name === 'NotAllowedError' || name === 'SecurityError') {
           if (isMac) {
-            this._showToast('Allow Screen Recording for Chrome: System Settings → Privacy & Security → Screen Recording.');
+            showToast('Allow Screen Recording for Chrome: System Settings → Privacy & Security → Screen Recording.');
           } else {
-            this._showToast('Capture permission denied. Allow screen + audio capture in your browser.');
+            showToast('Capture permission denied. Allow screen + audio capture in your browser.');
           }
           notified = true;
         } else if (name === 'NotFoundError') {
-          this._showToast('No capture sources available. Try selecting a specific tab with audio.');
+          showToast('No capture sources available. Try selecting a specific tab with audio.');
           notified = true;
         } else if (name === 'OverconstrainedError') {
-          this._showToast('System audio unsupported with current constraints. Use Chrome tab audio or BlackHole.');
+          showToast('System audio unsupported with current constraints. Use Chrome tab audio or BlackHole.');
           notified = true;
         } else if (!name && msg.includes('audio') && msg.includes('not')) {
-          this._showToast('No audio track captured. Choose Chrome Tab and enable "Share tab audio".');
+          showToast('No audio track captured. Choose Chrome Tab and enable "Share tab audio".');
           notified = true;
         }
         if (notified) { try { e.__reactiveNotified = true; } catch (_) {} }
@@ -293,52 +438,115 @@ export class AudioEngine {
     }
   }
 
+  /**
+   * Load and play an audio file.
+   * 
+   * Decodes the audio file, creates a looping AudioBufferSourceNode,
+   * and triggers BPM estimation and Essentia analysis in the background.
+   * 
+   * @param {File} file - The audio file to load
+   * @returns {Promise<void>} Resolves when file is loaded and playing
+   */
   async loadFile(file) {
     await this.ensureContext();
-    this.stop();
+    this.stop(); // Stop any existing audio
+    
+    // Decode the audio file into an AudioBuffer
     const arrayBuf = await file.arrayBuffer();
     const audioBuf = await this.ctx.decodeAudioData(arrayBuf);
+    
+    // Create a buffer source node and start looping playback
     const src = this.ctx.createBufferSource();
-    src.buffer = audioBuf; src.loop = true; src.start(0);
+    src.buffer = audioBuf;
+    src.loop = true;        // Loop the audio
+    src.start(0);           // Start immediately
     src.connect(this.gainNode);
     this._ensureGraph();
-    this.source = src; this.isPlayingFile = true; this.activeStream = null; this._lastAudioBuffer = audioBuf;
+    this.source = src;
+    this.isPlayingFile = true;
+    this.activeStream = null;
+    this._lastAudioBuffer = audioBuf; // Store for BPM recalculation
+    // Track playback timeline for downbeat gating
+    this._fileStartCtxTimeSec = this.ctx.currentTime;
+    this._fileDurationSec = audioBuf.duration || 0;
 
     // Fire-and-forget BPM estimation for tempo assist
+    // This runs in the background and updates bpmEstimate when done
     this._estimateBpmFromBuffer(audioBuf).catch(() => {});
 
+    // Run Essentia analysis for beat grid detection
+    // This provides precise beat tracking and tempo information
     this._runEssentiaAnalysis(audioBuf).catch((err) => {
       console.warn('Essentia analysis failed', err);
     });
   }
 
+  /**
+   * Stops all audio playback and capture.
+   * 
+   * Stops the current audio source (file playback or microphone/system capture),
+   * but keeps the audio context alive so it can be resumed quickly.
+   * Does not clear BPM estimate (allows UI to still show last known value).
+   */
   stop() {
+    // Stop audio file playback if active
     try {
       if (this.source && this.source.stop) {
         this.source.stop();
       }
     } catch(_){}
+    
+    // Stop media stream tracks (microphone/system audio)
     if (this.activeStream) {
       for (const t of this.activeStream.getTracks()) t.stop();
     }
-    this.source = null; this.activeStream = null; this.isPlayingFile = false;
+    
+    // Clear source references
+    this.source = null;
+    this.activeStream = null;
+    this.isPlayingFile = false;
+    this._fileStartCtxTimeSec = 0;
+    this._fileDurationSec = 0;
+    
+    // Reset worklet state
     if (this.workletNode) {
       try { this.workletNode.port.postMessage({ type: 'reset' }); } catch (_) {}
     }
+    
     // Don't clear BPM immediately; allow UI to still show last known value
   }
 
   // Webcam feature removed: startWebcam/stopWebcam et al removed
 
   _useStream(stream) {
+    // Defensive check: ensure context exists before creating nodes
+    if (!this.ctx) {
+      console.error('Audio context not initialized');
+      showToast('Audio system not ready. Please refresh the page.', 3000);
+      return;
+    }
+
+    // Stop existing stream
     if (this.activeStream) {
       for (const t of this.activeStream.getTracks()) t.stop();
     }
+
     this.activeStream = stream;
-    const src = this.ctx.createMediaStreamSource(stream);
-    src.connect(this.gainNode);
-    this._ensureGraph();
-    this.source = src; this.isPlayingFile = false;
+
+    try {
+      const src = this.ctx.createMediaStreamSource(stream);
+      src.connect(this.gainNode);
+      this._ensureGraph();
+      this.source = src;
+      this.isPlayingFile = false;
+    } catch (err) {
+      console.error('Failed to connect audio stream', err);
+      showToast('Failed to connect audio source.', 2500);
+      // Clean up the stream if connection failed
+      for (const t of stream.getTracks()) t.stop();
+      this.activeStream = null;
+      throw err;
+    }
   }
 
   setGain(v) { if (this.gainNode) this.gainNode.gain.value = v; }
@@ -356,9 +564,35 @@ export class AudioEngine {
     this.smoothing = v;
     this._meydaSmoothing = this._clamp(v, 0.1, 0.9);
   }
+  setLowCpuMode(enabled) {
+    this.lowCpuMode = !!enabled;
+    // Reduce Meyda extraction rate when enabled
+    this._meydaIntervalMs = this.lowCpuMode ? (1000 / 50) : (1000 / 75);
+  }
   setBandSplit(lowHz, midHz) { this.bandSplit.low = lowHz; this.bandSplit.mid = midHz; }
   setSubHz(hz) { this.bandSplit.sub = Math.max(20, Math.min(200, hz)); }
-  setBeatCooldown(ms) { this.beatCooldownMs = ms; }
+  /**
+   * Set the refractory window for beat detection.
+   * Alias maintained via setBeatCooldown for backward compatibility.
+   * @param {number} ms - Minimum milliseconds between accepted beats.
+   */
+  setBeatRefractory(ms) {
+    const v = Math.max(60, Math.floor(ms || 0));
+    this.beatRefractoryMs = v;
+    // Keep legacy field in sync for presets/loaders referring to beatCooldown
+    this.beatCooldownMs = v;
+  }
+  /** @deprecated Use setBeatRefractory */
+  setBeatCooldown(ms) { this.setBeatRefractory(ms); }
+  /**
+   * Set the minimum bass energy required to accept a beat (0..1).
+   * Gates hats/snares in noisy venues; only strong downbeats fire.
+   */
+  setBeatEnergyFloor(v) { this.beatEnergyFloor = this._clamp(v, 0, 1); }
+  /** Enable/disable the input noise gate. */
+  setNoiseGateEnabled(v) { this.noiseGateEnabled = !!v; }
+  /** Set the noise gate threshold (0..1). Typical: 0.05–0.20. */
+  setNoiseGateThreshold(v) { this.noiseGateThreshold = this._clamp(v, 0, 0.95); }
   setEnvAttack(v) { this.envAttack = this._clamp(v, 0.0, 1.0); }
   setEnvRelease(v) { this.envRelease = this._clamp(v, 0.0, 1.0); }
   setBandAgcEnabled(v) { this.bandAGCEnabled = !!v; }
@@ -369,6 +603,77 @@ export class AudioEngine {
   setDropCentroidSlopeThresh(v) { this.dropCentroidSlopeThresh = this._clamp(v, 0.005, 0.2); }
   setDropMinBeats(v) { this.dropMinBeats = Math.max(1, Math.floor(v)); }
   setDropCooldownMs(v) { this.dropCooldownMs = Math.max(500, Math.floor(v)); }
+
+  // Drop bar-gating controls
+  setDropBarGatingEnabled(v) {
+    this.dropBarGatingEnabled = !!v;
+    if (this.dropBarGatingEnabled) this._beatIndexForDrop = -1;
+  }
+  setDropGateBeatsPerBar(v) {
+    this.dropGateBeatsPerBar = Math.max(1, Math.floor(v || 4));
+  }
+  setDropDownbeatToleranceMs(v) { this.dropDownbeatGateToleranceMs = Math.max(10, Math.floor(v || 80)); }
+  setDropUseBassFlux(v) { this.dropUseBassFlux = !!v; }
+  setAutoDropThresholdsEnabled(v) {
+    this.autoDropThresholdsEnabled = !!v;
+    this._autoThrApplied = false;
+    this._autoBassOnBeats = [];
+    this._autoCentroidNegOnBeats = [];
+    this._autoThrStartMs = performance.now();
+  }
+
+  /**
+   * Calibrate the ambient noise floor for the noise gate by sampling bass-band
+   * energy from the current input for a short window.
+   * The resulting threshold is slightly above the 90th percentile of measured
+   * ambient bass energy, with a small safety margin.
+   *
+   * Failure modes: if no analyser or sampleRate is available, resolves to 0.
+   * @param {number} durationMs - Sampling duration in ms (default 5000ms)
+   * @returns {Promise<number>} resolved gate threshold (0..1)
+   */
+  async calibrateNoiseGate(durationMs = 5000) {
+    if (this._noiseGateCalibrating) return this.noiseGateThreshold;
+    await this.ensureContext();
+    if (!this.analyser || !this.sampleRate) return 0;
+    this._noiseGateCalibrating = true;
+    const wasEnabled = !!this.noiseGateEnabled;
+    const scratch = new Uint8Array(this.analyser.frequencyBinCount);
+    const sr = this.sampleRate || 44100;
+    const binHz = sr / 2 / scratch.length;
+    const lowHz = Math.max(80, this.bandSplit.low || 180);
+    const subHz = Math.max(20, Math.min(this.bandSplit.sub || 90, (this.bandSplit.low || 180) - 5));
+    const samples = [];
+    const start = performance.now();
+
+    // Temporarily disable the gate to get raw floor
+    this.noiseGateEnabled = false;
+
+    while (performance.now() - start < durationMs) {
+      try { this.analyser.getByteFrequencyData(scratch); } catch (_) { break; }
+      let sum = 0, count = 0;
+      for (let i = 0; i < scratch.length; i++) {
+        const f = i * binHz;
+        if (f >= subHz && f < lowHz) { sum += scratch[i] / 255; count++; }
+      }
+      const avg = count ? (sum / count) : 0;
+      samples.push(this._clamp(avg, 0, 1));
+      // ~50Hz sampling without blocking the UI thread
+      await new Promise(r => setTimeout(r, 20));
+    }
+
+    this.noiseGateEnabled = wasEnabled;
+    this._noiseGateCalibrating = false;
+    if (!samples.length) return this.noiseGateThreshold;
+    samples.sort((a, b) => a - b);
+    const p90 = samples[Math.min(samples.length - 1, Math.floor(samples.length * 0.90))];
+    // Add a margin and clamp to sane upper bound so music still comes through
+    const threshold = this._clamp(p90 * 1.15 + 0.02, 0.01, 0.5);
+    this.noiseGateThreshold = threshold;
+    this.noiseGateEnabled = true;
+    try { showToast(`Noise gate calibrated: ${threshold.toFixed(2)}`); } catch (_) {}
+    return threshold;
+  }
 
   // Tempo assist API
   setTempoAssistEnabled(v) {
@@ -383,6 +688,8 @@ export class AudioEngine {
     }
   }
   getBpm() { return this.bpmEstimate || 0; }
+  getBpmConfidence() { return this.bpmEstimateConfidence || 0; }
+  getBpmSource() { return this.bpmEstimateSource || ''; }
   async recalcBpm() {
     if (this._lastAudioBuffer) {
       await this._estimateBpmFromBuffer(this._lastAudioBuffer);
@@ -395,7 +702,7 @@ export class AudioEngine {
       await this._estimateBpmFromBuffer(live);
       try { this._runEssentiaAnalysis(live); } catch(_) {}
     } else {
-      try { this._showToast('Need a few seconds of live audio before recalculating BPM.'); } catch(_) {}
+      try { showToast('Need a few seconds of live audio before recalculating BPM.'); } catch(_) {}
     }
   }
 
@@ -429,7 +736,7 @@ export class AudioEngine {
   }
   resetTapTempo() { this.tapTimestamps = []; this.tapBpm = null; this.tapTempoIntervalMs = 0; }
   getTapBpm() { return this.tapBpm || 0; }
-  setTapQuantizeEnabled(v) { this.tapQuantizeEnabled = !!v; if (this.tapQuantizeEnabled) { this._lastQuantizeMs = performance.now(); } }
+  setTapQuantizeEnabled(v) { this.tapQuantizeEnabled = !!v; if (this.tapQuantizeEnabled) { this._lastQuantizeMs = performance.now(); if (this.dropBarGatingEnabled) this._beatIndexForDrop = -1; } }
 
   nudgeTapMultiplier(mult) {
     if (!mult || !isFinite(mult)) return;
@@ -551,59 +858,225 @@ export class AudioEngine {
   }
 
   async _estimateBpmFromBuffer(buffer) {
+    if (!buffer) return null;
+    const sampleRate = buffer.sampleRate || this.sampleRate || 44100;
+    const mono = this._extractMonoBuffer(buffer);
+    if (!mono || !mono.length) return null;
+
+    const segments = this._buildBpmAnalysisSegments(buffer, mono, sampleRate);
+    if (!segments.length) return null;
+
+    const candidates = [];
+    const recordCandidate = (value, source, weight = 1) => {
+      const normalized = this._normalizeBpmCandidate(value);
+      if (!normalized) return;
+      candidates.push({ bpm: normalized, source, weight: Math.max(0.1, weight) });
+    };
+
+    let guessFn = null;
     try {
-      const guess = await getBeatDetectorGuess();
-      const result = await guess(buffer);
-      // Support both number and { bpm } shapes from web-audio-beat-detector
-      let bpmVal = null;
-      if (typeof result === 'number' && isFinite(result)) {
-        bpmVal = result;
-      } else if (result && typeof result.bpm === 'number' && isFinite(result.bpm)) {
-        bpmVal = result.bpm;
-      }
-      const bpm = bpmVal ? Math.round(bpmVal) : null;
-      if (bpm && bpm > 30 && bpm < 300) {
-        this.bpmEstimate = bpm;
-        this.tempoIntervalMs = 60000 / bpm;
-        this._lastTempoMs = performance.now();
-        return bpm;
-      }
-    } catch (e) {
-      // Estimation may fail for very short/quiet files; ignore
+      guessFn = await getBeatDetectorGuess();
+    } catch (_) {
+      guessFn = null;
     }
 
-    // Fallback: run lightweight native estimator on the provided buffer
-    try {
-      const nativeBpm = this._estimateBpmNativeFromBuffer(buffer);
-      if (nativeBpm && nativeBpm > 30 && nativeBpm < 300) {
-        const bpm = Math.round(nativeBpm);
-        this.bpmEstimate = bpm;
-        this.tempoIntervalMs = 60000 / bpm;
-        this._lastTempoMs = performance.now();
-        return bpm;
+    if (typeof guessFn === 'function') {
+      for (const segment of segments) {
+        try {
+          const result = await guessFn(segment.audioBuffer);
+          const bpmVal = this._extractBpmValue(result);
+          recordCandidate(bpmVal, 'detector', segment.weight ?? 1);
+        } catch (_) {
+          // per-segment failures are expected for very short/quiet slices
+        }
       }
-    } catch (_) {}
+    }
+
+    for (const segment of segments) {
+      try {
+        const nativeBpm = this._estimateBpmNativeFromMono(segment.mono, sampleRate);
+        recordCandidate(nativeBpm, 'native', (segment.weight ?? 1) * 0.75);
+      } catch (_) {
+        // ignore native estimator failures on individual slices
+      }
+    }
+
+    const selection = this._selectBestBpmCandidate(candidates);
+    if (selection && selection.bpm && selection.bpm > 0) {
+      this.bpmEstimate = selection.bpm;
+      this.tempoIntervalMs = 60000 / selection.bpm;
+      this._lastTempoMs = performance.now();
+      this.bpmEstimateConfidence = selection.confidence;
+      this.bpmEstimateSource = selection.source;
+      return selection.bpm;
+    }
 
     return null;
+  }
+
+  _buildBpmAnalysisSegments(buffer, mono, sampleRate) {
+    const segments = [];
+    const sr = sampleRate || this.sampleRate || 44100;
+    if (!mono || !mono.length || !sr) {
+      return segments;
+    }
+
+    segments.push({
+      label: 'full',
+      mono,
+      audioBuffer: buffer,
+      weight: mono.length >= sr * 30 ? 2 : 1.5,
+    });
+
+    const totalSamples = mono.length;
+    const minSliceSec = 10;
+    const maxSliceSec = 24;
+    const minSliceSamples = Math.floor(minSliceSec * sr);
+    const maxSliceSamples = Math.floor(maxSliceSec * sr);
+
+    if (totalSamples <= minSliceSamples * 2) {
+      return segments;
+    }
+
+    const sliceSamples = Math.min(maxSliceSamples, totalSamples);
+    if (sliceSamples <= 0 || sliceSamples >= totalSamples) {
+      return segments;
+    }
+
+    const desiredSamples = Math.max(minSliceSamples, Math.min(sliceSamples, Math.floor(totalSamples * 0.45)));
+    if (desiredSamples <= 0 || desiredSamples >= totalSamples) {
+      return segments;
+    }
+
+    const ratios = totalSamples >= desiredSamples * 3 ? [0.2, 0.5, 0.8] : [0.33, 0.66];
+    const usedStarts = new Set();
+    for (const ratio of ratios) {
+      let start = Math.floor(totalSamples * ratio) - Math.floor(desiredSamples / 2);
+      if (start < 0) start = 0;
+      if (start > totalSamples - desiredSamples) start = totalSamples - desiredSamples;
+      if (start < 0 || start >= totalSamples - 4) continue;
+      const startKey = Math.round(start / Math.max(1, sr / 5));
+      if (usedStarts.has(startKey)) continue;
+      usedStarts.add(startKey);
+      const monoSegment = mono.subarray(start, start + desiredSamples);
+      const audioSegment = this._createAudioBufferFromMonoSegment(monoSegment, sr);
+      if (audioSegment) {
+        segments.push({
+          label: `slice-${Math.round(ratio * 100)}`,
+          mono: monoSegment,
+          audioBuffer: audioSegment,
+          weight: 1,
+        });
+      }
+    }
+
+    return segments;
+  }
+
+  _createAudioBufferFromMonoSegment(monoSegment, sampleRate) {
+    if (!monoSegment || !monoSegment.length || !this.ctx) return null;
+    try {
+      const audioBuffer = this.ctx.createBuffer(1, monoSegment.length, sampleRate || this.sampleRate || 44100);
+      try {
+        audioBuffer.copyToChannel(monoSegment, 0, 0);
+      } catch (_) {
+        const channel = audioBuffer.getChannelData(0);
+        channel.set(monoSegment);
+      }
+      return audioBuffer;
+    } catch (err) {
+      console.warn('Failed to create BPM slice buffer', err);
+      return null;
+    }
+  }
+
+  _extractBpmValue(result) {
+    if (typeof result === 'number' && isFinite(result)) return result;
+    if (result && typeof result.bpm === 'number' && isFinite(result.bpm)) return result.bpm;
+    const tempo = result?.tempo;
+    if (tempo && typeof tempo.bpm === 'number' && isFinite(tempo.bpm)) return tempo.bpm;
+    return null;
+  }
+
+  _normalizeBpmCandidate(value) {
+    if (typeof value !== 'number' || !isFinite(value) || value <= 0) return null;
+    let bpm = value;
+    while (bpm > 0 && bpm < 30) bpm *= 2;
+    while (bpm > 300) bpm *= 0.5;
+    if (bpm < 30 || bpm > 300) return null;
+    if (bpm < 60) bpm *= 2;
+    if (bpm > 200) bpm *= 0.5;
+    if (bpm < 60 || bpm > 200) return null;
+    if (bpm < 80 && bpm * 2 <= 180) bpm *= 2;
+    if (bpm > 180 && bpm * 0.5 >= 80) bpm *= 0.5;
+    return bpm;
+  }
+
+  _selectBestBpmCandidate(candidates) {
+    if (!Array.isArray(candidates) || candidates.length === 0) return null;
+    const tolerance = 1.25;
+    const totalWeight = candidates.reduce((sum, c) => sum + (c.weight || 0), 0) || 1;
+    const buckets = [];
+
+    for (const cand of candidates) {
+      if (!cand || !cand.bpm || !isFinite(cand.bpm)) continue;
+      let bucket = null;
+      for (const existing of buckets) {
+        if (Math.abs(existing.center - cand.bpm) <= tolerance) {
+          bucket = existing;
+          break;
+        }
+      }
+      if (!bucket) {
+        bucket = {
+          center: cand.bpm,
+          weight: 0,
+          values: [],
+          sources: new Map(),
+        };
+        buckets.push(bucket);
+      }
+      const currentCount = bucket.values.length;
+      bucket.center = (bucket.center * currentCount + cand.bpm) / (currentCount + 1);
+      bucket.weight += cand.weight || 0;
+      bucket.values.push(cand.bpm);
+      bucket.sources.set(cand.source || 'unknown', (bucket.sources.get(cand.source || 'unknown') || 0) + (cand.weight || 0));
+    }
+
+    buckets.sort((a, b) => (b.weight - a.weight) || (a.center - b.center));
+    const best = buckets[0];
+    if (!best) return null;
+    const avg = best.values.reduce((sum, v) => sum + v, 0) / best.values.length;
+    const primarySource = Array.from(best.sources.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] || 'unknown';
+    const confidence = this._clamp(best.weight / totalWeight, 0, 1);
+    return { bpm: Math.round(avg), confidence, source: primarySource };
   }
 
   // Minimal, dependency-free BPM estimator using energy-onset autocorrelation.
   _estimateBpmNativeFromBuffer(buffer) {
     if (!buffer) return 0;
     const sr = buffer.sampleRate || this.sampleRate || 44100;
+    const mono = this._extractMonoBuffer(buffer);
+    if (!mono || !mono.length) return 0;
+    return this._estimateBpmNativeFromMono(mono, sr);
+  }
+
+  _estimateBpmNativeFromMono(mono, sampleRate) {
+    if (!mono || mono.length < 4096) return 0;
+    const sr = sampleRate || this.sampleRate || 44100;
     const hop = 512; // ~11.6ms @ 44.1k
     const size = 1024;
-    const mono = this._extractMonoBuffer(buffer);
-    if (!mono || mono.length < size * 4) return 0;
+    if (mono.length < size * 4) return 0;
 
     // Build positive-onset envelope from log-energy differences
-    const frames = Math.floor((mono.length - size) / hop);
+    const frames = Math.max(1, Math.floor((mono.length - size) / hop));
     const onset = new Float32Array(frames);
     let prev = 0;
     for (let i = 0; i < frames; i++) {
       const off = i * hop;
       let e = 0;
-      for (let j = 0; j < size; j++) {
+      const limit = Math.min(size, mono.length - off);
+      for (let j = 0; j < limit; j++) {
         const v = mono[off + j]; e += v * v;
       }
       const loge = Math.log(1e-9 + e);
@@ -889,7 +1362,7 @@ export class AudioEngine {
       // Keep console details for developers, but show a concise toast to users
       console.warn('Essentia worker error', data.error);
       try {
-        this._showToast('Beat grid unavailable (analysis module failed). Playback continues.');
+        showToast('Beat grid unavailable (analysis module failed). Playback continues.');
       } catch(_) {}
       return;
     }
@@ -901,32 +1374,7 @@ export class AudioEngine {
     }
   }
 
-  _showToast(message) {
-    try {
-      let el = document.getElementById('toast');
-      if (!el) {
-        el = document.createElement('div');
-        el.id = 'toast';
-        el.style.position = 'fixed';
-        el.style.left = '50%';
-        el.style.bottom = '80px';
-        el.style.transform = 'translateX(-50%)';
-        el.style.zIndex = '70';
-        el.style.padding = '10px 14px';
-        el.style.borderRadius = '12px';
-        el.style.border = '1px solid rgba(255,255,255,0.25)';
-        el.style.background = 'rgba(0,0,0,0.6)';
-        el.style.color = '#fff';
-        el.style.backdropFilter = 'blur(10px)';
-        el.style.webkitBackdropFilter = 'blur(10px)';
-        document.body.appendChild(el);
-      }
-      el.textContent = message;
-      el.style.opacity = '1';
-      clearTimeout(this._toastTimer);
-      this._toastTimer = setTimeout(() => { el.style.transition = 'opacity 0.4s ease'; el.style.opacity = '0'; }, 3000);
-    } catch(_) {}
-  }
+  // toast handled via centralized helper in toast.js
 
   async _runEssentiaAnalysis(buffer) {
     try {
@@ -989,6 +1437,8 @@ export class AudioEngine {
       this.bpmEstimate = bpm;
       this.tempoIntervalMs = 60000 / bpm;
       this._lastTempoMs = performance.now();
+      this.bpmEstimateConfidence = this._clamp(result.confidence || 0, 0, 1);
+      this.bpmEstimateSource = 'essentia';
     }
   }
 
@@ -1214,9 +1664,69 @@ export class AudioEngine {
     return flux;
   }
 
-  _detectBeat(flux) {
+  _computeBassFlux(freqData) {
+    const N = freqData.length;
+    const sr = this.sampleRate || 48000;
+    const binHz = sr / 2 / N;
+    const cutoffHz = Math.max(40, Math.min(this.bandSplit.low || 180, 600));
+    const cutoffBin = Math.max(1, Math.min(N >> 1, Math.floor(cutoffHz / binHz)));
+    if (!this._prevMagBass || this._prevMagBass.length !== cutoffBin) {
+      this._prevMagBass = new Float32Array(cutoffBin);
+    }
+    let flux = 0;
+    for (let i = 0; i < cutoffBin; i++) {
+      const mag = (freqData[i] / 255);
+      const diff = mag - this._prevMagBass[i];
+      if (diff > 0) flux += diff;
+      this._prevMagBass[i] = mag;
+    }
+    flux /= cutoffBin;
+    this.bassFluxHistory.push(flux);
+    if (this.bassFluxHistory.length > this.bassFluxWindow) this.bassFluxHistory.shift();
+    return flux;
+  }
+
+  _getPlaybackTimeSeconds() {
+    if (!this.isPlayingFile || !this.ctx) return null;
+    const dur = this._fileDurationSec || 0;
+    if (!(dur > 0)) return null;
+    const t = (this.ctx.currentTime - (this._fileStartCtxTimeSec || 0));
+    if (!(t >= 0)) return null;
+    return t % dur;
+  }
+
+  _isNearDownbeat(nowSec, toleranceMs = 80) {
+    const grid = this.beatGrid;
+    if (!grid || !Array.isArray(grid.downbeats) || grid.downbeats.length === 0) return false;
+    const db = grid.downbeats;
+    // binary search nearest
+    let lo = 0, hi = db.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (db[mid] < nowSec) lo = mid + 1; else hi = mid - 1;
+    }
+    const idx = Math.min(db.length - 1, Math.max(0, lo));
+    const prevIdx = Math.max(0, idx - 1);
+    const nearest = Math.abs(db[idx] - nowSec) <= Math.abs(db[prevIdx] - nowSec) ? db[idx] : db[prevIdx];
+    const deltaMs = Math.abs(nowSec - nearest) * 1000;
+    return deltaMs <= Math.max(10, toleranceMs);
+  }
+
+  _percentile(sortedArray, p) {
+    const arr = (sortedArray || []).slice().sort((a,b)=>a-b);
+    if (!arr.length) return 0;
+    const idx = Math.min(arr.length - 1, Math.max(0, Math.floor(p * (arr.length - 1))));
+    return arr[idx];
+  }
+
+  _detectBeat(flux, bands) {
     if (this.fluxHistory.length < 5) return false;
-    const now = performance.now(); if (now - this._lastBeatMs < this.beatCooldownMs) return false;
+    const now = performance.now();
+    const refractory = Number.isFinite(this.beatRefractoryMs) && this.beatRefractoryMs > 0 ? this.beatRefractoryMs : this.beatCooldownMs;
+    if (now - this._lastBeatMs < refractory) return false;
+    // Energy gate: require sufficient bass envelope to accept any beat.
+    const bassEnv = bands && bands.env ? (bands.env.bass ?? 0) : 0;
+    if (bassEnv < (this.beatEnergyFloor ?? 0)) return false;
     // Adaptive threshold: mean + k*std
     const mean = this.fluxHistory.reduce((a,b)=>a+b,0) / this.fluxHistory.length;
     const variance = this.fluxHistory.reduce((a,b)=>a+(b-mean)*(b-mean),0) / this.fluxHistory.length;
@@ -1226,10 +1736,50 @@ export class AudioEngine {
     return false;
   }
 
+  /**
+   * Main update function - called every frame to extract audio features.
+   * 
+   * This is the heart of the audio analysis. It:
+   * 1. Reads current audio data from the analyser
+   * 2. Processes it through various algorithms (RMS, frequency bands, flux, etc.)
+   * 3. Detects beats, drops, and other musical events
+   * 4. Integrates results from external libraries (Aubio, Meyda, Essentia)
+   * 5. Returns a comprehensive features object
+   * 
+   * This function is called every frame (~60 times per second) from main.js.
+   * 
+   * @returns {Object|null} Features object with all extracted audio features, or null if analyser not ready
+   */
   update() {
+    // Must have analyser node to extract data
     if (!this.analyser) return null;
-    this.analyser.getByteTimeDomainData(this.timeData);
-    this.analyser.getByteFrequencyData(this.freqData);
+    
+    // Get current audio data from analyser
+    // These update the timeData and freqData arrays with current values
+    this.analyser.getByteTimeDomainData(this.timeData);   // Waveform data (time domain)
+    this.analyser.getByteFrequencyData(this.freqData);    // Frequency spectrum data (frequency domain)
+
+    // Optional front-end noise gate: attenuate low-level ambient energy before
+    // feature extraction. Helps reduce false-positive beats in noisy venues.
+    if (this.noiseGateEnabled) {
+      const thr = this._clamp(this.noiseGateThreshold || 0, 0, 0.95);
+      // Time-domain gate (map 0..255 -> [-1,1], apply soft gate, map back)
+      const td = this.timeData;
+      for (let i = 0; i < td.length; i++) {
+        let v = (td[i] - 128) / 128;
+        const sign = v < 0 ? -1 : 1;
+        const a = Math.abs(v);
+        const out = a <= thr ? 0 : sign * ((a - thr) / (1 - thr));
+        td[i] = Math.max(0, Math.min(255, Math.round(128 + 128 * out)));
+      }
+      // Frequency-domain gate (normalize, gate below threshold, renormalize)
+      const fd = this.freqData;
+      for (let i = 0; i < fd.length; i++) {
+        const v = fd[i] / 255;
+        const out = v <= thr ? 0 : (v - thr) / (1 - thr);
+        fd[i] = Math.max(0, Math.min(255, Math.round(out * 255)));
+      }
+    }
 
     const useWorkletRms = this.workletEnabled && this._workletFrameId >= 0;
     const rms = useWorkletRms ? this._workletFeatures.rms : this._computeRMS(this.timeData);
@@ -1237,7 +1787,8 @@ export class AudioEngine {
     const centroid = this._computeCentroid(this.freqData);
     const fluxFromWorklet = this._consumeWorkletFlux();
     const flux = fluxFromWorklet ?? this._computeFlux(this.freqData);
-    let beat = this._detectBeat(flux);
+    const bassFlux = this._computeBassFlux(this.freqData);
+    let beat = this._detectBeat(flux, bands);
 
     // Live tempo assist: prefer file BPM; else use Aubio tempo for live sources
     const now = performance.now();
@@ -1252,11 +1803,16 @@ export class AudioEngine {
         const liveConf = this.aubioFeatures.tempoConf;
         if (typeof liveBpm === 'number' && isFinite(liveBpm) && liveBpm > 30 && liveBpm < 300 && (liveConf ?? 0) >= 0.05) {
           const rounded = Math.round(liveBpm);
+          const intervalMs = rounded > 0 ? 60000 / rounded : 0;
           if (!this.bpmEstimate || Math.abs(rounded - this.bpmEstimate) >= 1) {
             this.bpmEstimate = rounded;
-            this.tempoIntervalMs = 60000 / this.bpmEstimate;
-            this._lastTempoMs = now;
           }
+          if (intervalMs > 0) {
+            this.tempoIntervalMs = intervalMs;
+          }
+          this._lastTempoMs = now;
+          this.bpmEstimateSource = 'aubio-live';
+          this.bpmEstimateConfidence = this._clamp(liveConf || 0, 1e-3, 1);
         }
       }
     }
@@ -1277,6 +1833,8 @@ export class AudioEngine {
     // Align detected onsets to grid by resetting phase on real beat
     if (beat && gridInterval > 0) {
       this._lastQuantizeMs = now;
+      // Reset bar phase so the next quantized beat is treated as downbeat for gating
+      if (this.dropBarGatingEnabled) this._beatIndexForDrop = -1;
     }
     const aubioOnsetPulse = this.aubioFeatures.lastOnsetMs > 0 && (now - this.aubioFeatures.lastOnsetMs) < 150;
 
@@ -1298,16 +1856,40 @@ export class AudioEngine {
     let buildLevel = this._buildLevel;
     let centroidSlope = this._centroidSlopeEma;
     if (this.dropEnabled) {
-      const z = this._workletFeatures && this._workletFeatures.fluxStd > 0
-        ? (flux - this._workletFeatures.fluxMean) / Math.max(1e-3, this._workletFeatures.fluxStd)
-        : 0;
-      const posZ = Math.max(0, z);
+      // Choose flux source for build metric
+      let posZ = 0;
+      if (this.dropUseBassFlux && this.bassFluxHistory.length >= 5) {
+        const m = this.bassFluxHistory.reduce((a,b)=>a+b,0) / this.bassFluxHistory.length;
+        const v = this.bassFluxHistory.reduce((a,b)=>{ const d=b-m; return a + d*d; },0) / this.bassFluxHistory.length;
+        const s = Math.sqrt(Math.max(v, 1e-6));
+        posZ = Math.max(0, (bassFlux - m) / s);
+      } else {
+        const z = this._workletFeatures && this._workletFeatures.fluxStd > 0
+          ? (flux - this._workletFeatures.fluxMean) / Math.max(1e-3, this._workletFeatures.fluxStd)
+          : 0;
+        posZ = Math.max(0, z);
+      }
       buildLevel = buildLevel * 0.8 + posZ * 0.2;
       const cDelta = centroid.norm - (this._centroidPrev || centroid.norm);
       this._centroidPrev = centroid.norm;
       centroidSlope = centroidSlope * (1 - this._centroidSlopeAlpha) + cDelta * this._centroidSlopeAlpha;
 
       if (beat || quantBeat) {
+        // Collect samples for adaptive thresholding (during warmup)
+        if (this.autoDropThresholdsEnabled && !this._autoThrApplied) {
+          const negSlope = Math.max(0, -cDelta);
+          this._autoBassOnBeats.push(bands.env?.bass ?? 0);
+          if (negSlope > 0) this._autoCentroidNegOnBeats.push(negSlope);
+        }
+        // Maintain bar-phase state for optional drop gating
+        if (this.dropBarGatingEnabled) {
+          if (this._beatIndexForDrop == null || this._beatIndexForDrop < 0) {
+            this._beatIndexForDrop = 0; // treat this beat as downbeat
+          } else {
+            const nBeats = Math.max(1, Math.floor(this.dropGateBeatsPerBar || 4));
+            this._beatIndexForDrop = (this._beatIndexForDrop + 1) % nBeats;
+          }
+        }
         if (posZ > this.dropFluxThresh) {
           this._buildBeats += 1; isBuilding = true;
         } else {
@@ -1317,13 +1899,37 @@ export class AudioEngine {
 
         const nowMs = performance.now();
         const canDrop = (nowMs - this._lastDropMs) > this.dropCooldownMs;
-        if (canDrop && this._buildBeats >= this.dropMinBeats) {
+        let passesGating = true;
+        if (this.dropBarGatingEnabled) {
+          if (this.isPlayingFile && this.beatGrid && Array.isArray(this.beatGrid.downbeats) && this.beatGrid.downbeats.length) {
+            const nowSec = this._getPlaybackTimeSeconds();
+            passesGating = nowSec != null ? this._isNearDownbeat(nowSec, this.dropDownbeatGateToleranceMs) : false;
+          } else {
+            passesGating = (this._beatIndexForDrop === 0);
+          }
+        }
+        if (canDrop && this._buildBeats >= this.dropMinBeats && passesGating) {
           if (centroidSlope < -this.dropCentroidSlopeThresh && (bands.env?.bass ?? 0) > this.dropBassThresh) {
             drop = true; this._lastDropMs = nowMs; this._buildBeats = 0; isBuilding = false;
           }
         }
       }
       this._buildLevel = buildLevel; this._centroidSlopeEma = centroidSlope;
+      // Apply adaptive thresholds once warmup window passes
+      if (this.autoDropThresholdsEnabled && !this._autoThrApplied) {
+        const started = this._autoThrStartMs || (this._autoThrStartMs = performance.now());
+        if (performance.now() - started >= this.autoDropCalDurationMs) {
+          if (this._autoBassOnBeats.length >= 6) {
+            const p70 = this._percentile(this._autoBassOnBeats, 0.70);
+            this.dropBassThresh = this._clamp(p70, 0.35, 0.85);
+          }
+          if (this._autoCentroidNegOnBeats.length >= 6) {
+            const p60 = this._percentile(this._autoCentroidNegOnBeats, 0.60);
+            this.dropCentroidSlopeThresh = this._clamp(p60, 0.008, 0.05);
+          }
+          this._autoThrApplied = true;
+        }
+      }
     }
 
     return {
@@ -1344,6 +1950,8 @@ export class AudioEngine {
       buildLevel,
       lastDropMs: this._lastDropMs,
       bpm: this.bpmEstimate || 0,
+      bpmConfidence: this.bpmEstimateConfidence || 0,
+      bpmSource: this.bpmEstimateSource || '',
       tapBpm: this.tapBpm || 0,
       mfcc: meyda.mfcc,
       chroma: meyda.chroma,

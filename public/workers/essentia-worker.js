@@ -23,7 +23,23 @@ async function ensureModule() {
 
   STATE.loading = true;
   try {
-    const module = await import('https://cdn.jsdelivr.net/npm/essentia.js@0.1.0/dist/essentia-wasm.web.js');
+    // Prefer local vendored module first; fallback to CDN
+    const localCandidates = [
+      new URL('../vendor/essentia/essentia-wasm.web.js', import.meta.url).href,
+    ];
+    const remoteCandidates = [
+      'https://cdn.jsdelivr.net/npm/essentia.js@0.1.0/dist/essentia-wasm.web.js'
+    ];
+    let module = null;
+    for (const href of [...localCandidates, ...remoteCandidates]) {
+      try {
+        module = await import(/* @vite-ignore */ href);
+        if (module) break;
+      } catch (_) {
+        // try next
+      }
+    }
+    if (!module) throw new Error('Essentia module not found (local/CDN)');
     // The Essentia ESM export shape can vary across versions/builds.
     // Try common candidates: default export as factory, nested default, or named factories.
     const candidates = [

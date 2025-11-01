@@ -5,9 +5,14 @@
   "description": "WebSocket → OSC bridge for TouchDesigner integration",
   "license": "MIT",
   "scripts": {
-    "start": "node osc-bridge.js"
+    "start": "node osc-bridge.js",
+    "pm2": "pm2 start ecosystem.config.js",
+    "pm2:restart": "pm2 restart reactive-osc-bridge",
+    "pm2:stop": "pm2 stop reactive-osc-bridge",
+    "pm2:logs": "pm2 logs reactive-osc-bridge"
   },
   "dependencies": {
+    "dotenv": "^16.4.5",
     "osc": "^2.4.3",
     "ws": "^8.18.0"
   }

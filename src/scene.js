@@ -1,15 +1,63 @@
+/**
+ * 3D Scene Manager
+ *
+ * This file handles all 3D graphics rendering using Three.js. It creates and manages:
+ * - Particle systems (spheres, rings, stars, sparks)
+ * - Camera controls and animation
+ * - Post-processing effects (bloom, chromatic aberration)
+ * - Theme system (colors, HDR backgrounds)
+ * - Shader effects (reactive to audio features)
+ *
+ * What this file does:
+ * 1. Initializes Three.js scene, camera, renderer
+ * 2. Creates particle systems that react to audio
+ * 3. Manages themes and visual styles
+ * 4. Handles camera controls and mouse interaction
+ * 5. Applies post-processing effects for visual polish
+ * 6. Updates visuals every frame based on audio features
+ *
+ * Key Concepts:
+ * - Points: 3D particles rendered as glowing points
+ * - Shaders: GPU programs that control particle appearance and motion
+ * - Post-processing: Effects applied after rendering (bloom, chromatic aberration)
+ * - HDR: High Dynamic Range backgrounds for realistic lighting
+ *
+ * Data Flow:
+ * - Audio features → sceneApi.update() → Visual animations
+ * - User settings → sceneApi.state.params → Visual parameters
+ */
+
 import * as THREE from 'three';
 import CameraControls from 'camera-controls';
 import { EffectComposer, RenderPass, EffectPass, BloomEffect, ChromaticAberrationEffect } from 'postprocessing';
 import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
 import { createEyeLayer, createCornea, updateEyeUniforms } from './eye.js';
 import { createDispersionLayer } from './dispersion.js';
+import { withDispersionDefaults } from './dispersion-config.js';
 
+// Install CameraControls plugin for Three.js
+// This provides smooth, interactive camera controls
 CameraControls.install({ THREE });
 
 // Hard-disable the experimental eye feature (remove center overlay completely)
+// This was an experimental visual effect that has been disabled
 const EYE_FEATURE_ENABLED = false;
 
+/**
+ * Visual Themes
+ * 
+ * Predefined color schemes and HDR backgrounds for different visual styles.
+ * Each theme defines:
+ * - sphere: Array of colors for the main particle sphere
+ * - rings: Function that generates colors for orbit rings
+ * - hdr: URL to HDR environment map for realistic lighting
+ * 
+ * Themes:
+ * - nebula: Cyan/pink space theme
+ * - sunset: Warm orange/purple sunset theme
+ * - forest: Green nature theme
+ * - aurora: Cyan/purple aurora theme
+ */
 export const themes = {
   nebula: {
     sphere: [new THREE.Color(0x00ffff), new THREE.Color(0xff1493), new THREE.Color(0x4169e1), new THREE.Color(0xff69b4), new THREE.Color(0x00bfff)],
@@ -34,6 +82,17 @@ export const themes = {
   }
 };
 
+/**
+ * Point Material Shader
+ * 
+ * Custom GLSL shader for rendering particles as glowing points.
+ * This shader:
+ * - Applies noise-based displacement for organic motion
+ * - Creates explosion effect when triggered
+ * - Responds to mouse position for interactive effects
+ * - Uses Simplex noise for smooth, organic movement
+ * - Adds pulsing and twinkling effects
+ */
 const pointMaterialShader = {
   vertexShader: `
     attribute float size; attribute vec3 randomDir; varying vec3 vColor; varying float vDistance; varying float vMouseEffect; uniform float time; uniform vec2 uMouse; uniform float uExplode; uniform float uReactiveScale;
@@ -98,6 +157,15 @@ const pointMaterialShader = {
   `,
 };
 
+/**
+ * Creates a radial gradient texture for particle glow effects.
+ * 
+ * This generates a canvas-based texture with a radial gradient from white
+ * in the center to transparent at the edges. Used for making particles glow.
+ * 
+ * @param {number} [size=256] - Texture size in pixels (square)
+ * @returns {THREE.Texture|null} The glow texture, or null if canvas creation fails
+ */
 function createGlowTexture(size = 256) {
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = size;
@@ -114,10 +182,18 @@ function createGlowTexture(size = 256) {
   const texture = new THREE.CanvasTexture(canvas);
   texture.magFilter = THREE.LinearFilter;
   texture.minFilter = THREE.LinearMipMapLinearFilter;
-  texture.encoding = THREE.sRGBEncoding;
+  try {
+    texture.colorSpace = THREE.SRGBColorSpace;
+  } catch (_) {}
   return texture;
 }
 
+/**
+ * Star Shader
+ * 
+ * Simple shader for background stars.
+ * Creates subtle twinkling effects with pulsing size and glow.
+ */
 const starShader = {
   vertexShader: `
     attribute float size; varying vec3 vColor; uniform float time; uniform float uTwinkleGain; void main(){ vColor=color; vec4 mvPosition=modelViewMatrix*vec4(position,1.0); float twinkle=sin(time*3.0+position.x*0.1+position.y*0.2)*0.3+0.7; twinkle *= (1.0 + uTwinkleGain); gl_PointSize=size*twinkle*(1000.0/-mvPosition.z); gl_Position=projectionMatrix*mvPosition; }
@@ -127,6 +203,12 @@ const starShader = {
   `,
 };
 
+/**
+ * Spark Shader
+ * 
+ * Shader for particle sparks that fade out over time.
+ * Used for explosion effects and visual accents.
+ */
 const sparkShader = {
   vertexShader: `
     attribute float size; attribute float life; varying float vLife; void main(){ vLife=life; vec4 mvPosition=modelViewMatrix*vec4(position,1.0); float s=size*(1000.0/-mvPosition.z); gl_PointSize=s*(0.6+0.4*vLife); gl_Position=projectionMatrix*mvPosition; }
@@ -136,6 +218,15 @@ const sparkShader = {
   `,
 };
 
+/**
+ * Creates a shader material for point particles.
+ * 
+ * Sets up uniforms (time, mouse position, explosion amount, reactive scaling)
+ * that are updated every frame to animate the particles.
+ * 
+ * @param {THREE.Vector2} mouse - Current mouse position (normalized -1 to 1)
+ * @returns {THREE.ShaderMaterial} The configured shader material
+ */
 function createPointShaderMaterial(mouse) {
   return new THREE.ShaderMaterial({
     uniforms: {
@@ -151,6 +242,17 @@ function createPointShaderMaterial(mouse) {
   });
 }
 
+/**
+ * Creates the main particle sphere using a spiral distribution algorithm.
+ * 
+ * Uses Fibonacci spiral distribution to evenly distribute particles across
+ * a sphere surface. This creates a visually pleasing, organic distribution.
+ * 
+ * @param {number} radius - Sphere radius
+ * @param {number} particleCount - Number of particles to create
+ * @param {THREE.Vector2} mouse - Mouse position for shader uniforms
+ * @returns {THREE.Points} The particle system configured as a sphere
+ */
 function createSpiralSphere(radius, particleCount, mouse) {
   const geometry = new THREE.BufferGeometry();
   const positions = new Float32Array(particleCount * 3);
@@ -175,6 +277,20 @@ function createSpiralSphere(radius, particleCount, mouse) {
   return new THREE.Points(geometry, material);
 }
 
+/**
+ * Creates orbiting ring particle systems.
+ * 
+ * Generates multiple circular rings of particles that orbit around the center.
+ * Each ring has particles distributed around its circumference with slight
+ * random variations for organic appearance.
+ * 
+ * @param {number} radius - Base radius of the rings
+ * @param {number} count - Number of rings to create
+ * @param {number} thickness - Thickness/variation of each ring
+ * @param {number} particleCount - Particles per ring
+ * @param {THREE.Vector2} mouse - Mouse position for shader uniforms
+ * @returns {THREE.Group} Group containing all ring particle systems
+ */
 function createOrbitRings(radius, count, thickness, particleCount, mouse) {
   const group = new THREE.Group();
   for (let i = 0; i < count; i++) {
@@ -230,6 +346,10 @@ function createSparks(count) {
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
   geometry.setAttribute('life', new THREE.BufferAttribute(life, 1));
+  try {
+    geometry.attributes.position.setUsage(THREE.DynamicDrawUsage);
+    geometry.attributes.life.setUsage(THREE.DynamicDrawUsage);
+  } catch (_) {}
   const material = new THREE.ShaderMaterial({
     uniforms: { time: { value: 0 } }, vertexShader: sparkShader.vertexShader, fragmentShader: sparkShader.fragmentShader,
     transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
@@ -315,13 +435,15 @@ export function initScene() {
     bloomEffect: null,
     chromaticEffect: null,
     chromaticIntensity: 0,
+    // Optional external provider for per-frame uniform deltas (e.g., performance pads)
+    _perfDeltasProvider: null,
     currentHdrTexture: null,
     isExplosionActive: false,
     explosionStartTime: 0,
     explosionDuration: 2000,
     mainGroup: new THREE.Group(),
     shockwave: { mesh: null, material: null, active: false, startTime: 0, duration: 1.2, intensity: 1, progress: 0, opacity: 0 },
-    dispersion: { layer: null, zoom: 0, offsetX: 0, offsetY: 0, opacity: 0.3, twist: 0, twistDir: 1, stutterTimes: [], travel: 0 },
+    dispersion: { layer: null, zoom: 0, offsetX: 0, offsetY: 0, opacity: 0.3, twist: 0, twistDir: 1, stutterTimes: [], travel: 0, _flipBeatAccumulator: 0, _flipSetting: 0, _downbeatEnv: 0 },
     metrics: {
       coreScale: 1,
       outerScale: 1,
@@ -356,10 +478,28 @@ export function initScene() {
       shockwaveIntensity: 0,
       sparksActive: 1,
       sparksAlive: 0,
+      parallaxOffsetX: 0,
+      parallaxOffsetY: 0,
+      downbeatPulse: 0,
+      beatsPerBar: 4,
+      beatIndex: 0,
+      tintMix: 0,
     },
+    // Effects profile scales for global quality control
+    effectsBloomScale: 1.0,
+    effectsChromaticScale: 1.0,
     _centroidEma: Number.NaN,
     _cameraRoll: 0,
     _fluxSway: 0,
+    _parallaxCentroidEma: Number.NaN,
+    _parallaxFluxEma: Number.NaN,
+    _parallaxOffsetX: 0,
+    _parallaxOffsetY: 0,
+    _beatIndex: -1,
+    _beatsPerBar: 4,
+    _lastBeatIntervalMs: 0,
+    _lastBeatTimeMs: 0,
+    _tintMix: Number.NaN,
     params: {
       theme: 'nebula',
       autoRotate: 0.0005,
@@ -448,8 +588,11 @@ export function initScene() {
       _lastBeatTime: -9999,
       // Overlay features
       enableDispersion: true,
+      dispersionShaderVariant: 'classic', // 'classic' | 'vortexDrill'
       // Visual mode: 'classic' | 'overlay' | 'shader-only'
-      visualMode: 'overlay',
+      visualMode: 'shader-only',
+      // Effects profile: 'off' | 'medium' | 'high'
+      effectsProfile: 'high',
     },
     eye: {
       mesh: null,
@@ -475,6 +618,8 @@ export function initScene() {
     // Morph/Webcam removed state
   };
 
+  state.params.dispersion = withDispersionDefaults(state.params.dispersion || {});
+
   state.scene.fog = new THREE.FogExp2(0x000000, state.params.fogDensity);
   state.camera.position.set(0, 2.5, 12);
   state.renderer.setSize(window.innerWidth, window.innerHeight);
@@ -487,19 +632,23 @@ export function initScene() {
   state.controls.smoothTime = 0.12; state.controls.minDistance = 10; state.controls.maxDistance = 50; state.controls.draggingSmoothTime = 0.15;
   state.controls.setLookAt(0, 5, 14, 0, 0, 0);
 
-  const renderPass = new RenderPass(state.scene, state.camera);
-  state.renderPass = renderPass;
-  state.bloomEffect = new BloomEffect({ intensity: state.params.bloomStrengthBase });
-  state.chromaticEffect = new ChromaticAberrationEffect({ offset: new THREE.Vector2(0, 0), radialModulation: false, modulationOffset: 0.0 });
-  state.chromaticIntensity = 0;
-  state.metrics.chromaticEnabled = state.chromaticEffect ? 1 : 0;
-  const effectPass = new EffectPass(state.camera, state.bloomEffect, state.chromaticEffect);
-  state.effectPass = effectPass;
-  state.metrics.bloomIntensity = state.bloomEffect.intensity;
-  // Force 8-bit framebuffer to avoid glCopyTexSubImage2D format issues on some GPUs
-  state.composer = new EffectComposer(state.renderer, { frameBufferType: THREE.UnsignedByteType });
-  state.composer.addPass(renderPass);
-  state.composer.addPass(effectPass);
+  function buildComposer() {
+    const renderPass = new RenderPass(state.scene, state.camera);
+    state.renderPass = renderPass;
+    state.bloomEffect = new BloomEffect({ intensity: state.params.bloomStrengthBase });
+    state.chromaticEffect = new ChromaticAberrationEffect({ offset: new THREE.Vector2(0, 0), radialModulation: false, modulationOffset: 0.0 });
+    state.chromaticIntensity = 0;
+    state.metrics.chromaticEnabled = state.chromaticEffect ? 1 : 0;
+    const effectPass = new EffectPass(state.camera, state.bloomEffect, state.chromaticEffect);
+    state.effectPass = effectPass;
+    state.metrics.bloomIntensity = state.bloomEffect.intensity;
+    // Force 8-bit framebuffer to avoid glCopyTexSubImage2D format issues on some GPUs
+    state.composer = new EffectComposer(state.renderer, { frameBufferType: THREE.UnsignedByteType });
+    state.composer.addPass(renderPass);
+    state.composer.addPass(effectPass);
+  }
+
+  buildComposer();
 
   // Dispersion overlay layer (full-screen quad), composited after effects
   function setupVisualMode(mode) {
@@ -535,7 +684,7 @@ export function initScene() {
   function ensureDispersion() {
     if (state.dispersion?.layer) return state.dispersion.layer;
     try {
-      state.dispersion.layer = createDispersionLayer();
+      state.dispersion.layer = createDispersionLayer(state.params.dispersionShaderVariant || 'classic');
       state.dispersion.layer.setSize(window.innerWidth, window.innerHeight);
       state.composer.addPass(state.dispersion.layer.pass);
     } catch (e) {
@@ -547,6 +696,43 @@ export function initScene() {
   }
 
   setupVisualMode(state.params.visualMode || 'overlay');
+
+  /**
+   * Update global effects profile scaling.
+   * off: disables bloom/chromatic influence; medium: reduces; high: full.
+   */
+  function setEffectsProfile(profile) {
+    const p = String(profile || 'high');
+    state.params.effectsProfile = p;
+    if (p === 'off') {
+      state.effectsBloomScale = 0.0;
+      state.effectsChromaticScale = 0.0;
+    } else if (p === 'medium') {
+      state.effectsBloomScale = 0.6;
+      state.effectsChromaticScale = 0.5;
+    } else {
+      state.effectsBloomScale = 1.0;
+      state.effectsChromaticScale = 1.0;
+    }
+  }
+
+  // Initialize effects profile scaling from params
+  setEffectsProfile(state.params.effectsProfile || 'high');
+
+  /**
+   * Rebuild the post-processing pipeline (composer and passes) and reapply visual mode.
+   * Useful as a panic/fix action during live operation.
+   */
+  function resetVisualPipeline() {
+    try {
+      buildComposer();
+      // Re-attach dispersion pass if it exists
+      if (state.dispersion?.layer?.pass) {
+        try { state.composer.addPass(state.dispersion.layer.pass); } catch (_) {}
+      }
+      setupVisualMode(state.params.visualMode || 'overlay');
+    } catch (_) {}
+  }
 
   // Particles
   const sphereCount = Math.floor(40000 * state.params.particleDensity);
@@ -795,7 +981,15 @@ export function initScene() {
     }
     try {
       const loader = new RGBELoader();
-      const texture = await loader.loadAsync(theme.hdr);
+      // Try local asset first, then fallback to theme.hdr remote URL
+      let texture = null;
+      const fileName = (theme.hdr || '').split('/').pop();
+      if (fileName) {
+        try { texture = await loader.loadAsync(`/assets/hdr/${fileName}`); } catch (_) { texture = null; }
+      }
+      if (!texture) {
+        texture = await loader.loadAsync(theme.hdr);
+      }
       texture.mapping = THREE.EquirectangularReflectionMapping;
       if (state.currentHdrTexture) state.currentHdrTexture.dispose();
       state.scene.background = texture; state.scene.environment = texture; state.currentHdrTexture = texture;
@@ -939,22 +1133,71 @@ export function initScene() {
 
   function update(features) {
     const t = state.clock.getElapsedTime();
+    // Fetch external performance deltas once per frame
+    const perf = (typeof state._perfDeltasProvider === 'function') ? (state._perfDeltasProvider() || {}) : {};
     const nowPerf = performance.now();
     const dt = (nowPerf - _lastUpdateNow) / 1000;
     _lastUpdateNow = nowPerf;
+    const nowMs = nowPerf;
     const rms = features?.rmsNorm ?? 0.0;
     const isBeat = !!(features && features.beat);
     const isDrop = !!(features && features.drop);
+    const dispersionParams = withDispersionDefaults(state.params.dispersion || {});
+    state.params.dispersion = dispersionParams;
 
     // Explosion on beat
     if (isBeat) {
-      const nowMs = performance.now();
       if (state.params.explosion.onBeat && nowMs - state.params._lastBeatTime > state.params.explosion.cooldownMs) {
         state.params._lastBeatTime = nowMs; triggerExplosion();
       }
     }
 
     updateExplosion(t);
+
+    const beatGrid = features?.beatGrid;
+    const prevBeatsPerBar = Math.max(1, state._beatsPerBar || 4);
+    let beatsPerBar = prevBeatsPerBar;
+    let beatIntervalMs = state._lastBeatIntervalMs || 0;
+    if (beatGrid && typeof beatGrid.bpm === 'number' && beatGrid.bpm > 0) {
+      const candidateIntervalMs = 60000 / beatGrid.bpm;
+      if (candidateIntervalMs > 0) beatIntervalMs = candidateIntervalMs;
+      if (Array.isArray(beatGrid.downbeats) && beatGrid.downbeats.length >= 2 && candidateIntervalMs > 0) {
+        for (let i = 1; i < beatGrid.downbeats.length; i++) {
+          const diff = beatGrid.downbeats[i] - beatGrid.downbeats[i - 1];
+          if (diff > 1e-3) {
+            const candidateBeats = Math.round(diff / (candidateIntervalMs / 1000));
+            if (candidateBeats >= 1 && candidateBeats <= 16) {
+              beatsPerBar = candidateBeats;
+              break;
+            }
+          }
+        }
+      }
+    } else if (typeof features?.bpm === 'number' && features.bpm > 0) {
+      beatIntervalMs = 60000 / features.bpm;
+    }
+    if (beatIntervalMs > 0) state._lastBeatIntervalMs = beatIntervalMs;
+    if (beatsPerBar !== prevBeatsPerBar) state._beatIndex = -1;
+    state._beatsPerBar = beatsPerBar;
+    let downbeatPulse = 0;
+    if (isBeat) {
+      if (state._beatIndex == null || state._beatIndex < 0 || state._beatIndex >= beatsPerBar) {
+        state._beatIndex = 0;
+        downbeatPulse = 1;
+      } else {
+        state._beatIndex = (state._beatIndex + 1) % beatsPerBar;
+        if (state._beatIndex === 0) downbeatPulse = 1;
+      }
+      state._lastBeatTimeMs = nowMs;
+    } else if (state._lastBeatIntervalMs > 0) {
+      const sinceLast = nowMs - (state._lastBeatTimeMs || nowMs);
+      if (sinceLast > state._lastBeatIntervalMs * 3) {
+        state._beatIndex = -1;
+      }
+    }
+    state.metrics.downbeatPulse = downbeatPulse;
+    state.metrics.beatsPerBar = beatsPerBar;
+    state.metrics.beatIndex = Math.max(0, state._beatIndex ?? 0);
 
     if (state.shockwave?.material?.uniforms) {
       const sw = state.shockwave;
@@ -1174,6 +1417,41 @@ export function initScene() {
     state.metrics.groupSway = state._fluxSway;
     state.mainGroup.rotation.x = state._fluxSway;
 
+    const dispersionCfg = dispersionParams;
+    const parallaxCentroidGain = typeof dispersionCfg.parallaxCentroidGain === 'number' ? dispersionCfg.parallaxCentroidGain : 0.08;
+    const parallaxFluxGain = typeof dispersionCfg.parallaxFluxGain === 'number' ? dispersionCfg.parallaxFluxGain : 0.024;
+    const parallaxClamp = THREE.MathUtils.clamp(dispersionCfg.parallaxClamp ?? 0.16, 0.01, 0.8);
+    const parallaxEnabled = (parallaxCentroidGain !== 0 || parallaxFluxGain !== 0);
+    const centroidInput = THREE.MathUtils.clamp(centroidDelta, -2, 2);
+    if (!Number.isFinite(state._parallaxCentroidEma)) state._parallaxCentroidEma = centroidInput;
+    if (!Number.isFinite(state._parallaxFluxEma)) state._parallaxFluxEma = fluxZ;
+    const centroidEma = THREE.MathUtils.lerp(state._parallaxCentroidEma, centroidInput, 0.2);
+    const fluxEma = THREE.MathUtils.lerp(state._parallaxFluxEma, fluxZ, 0.18);
+    state._parallaxCentroidEma = centroidEma;
+    state._parallaxFluxEma = fluxEma;
+
+    const targetParallaxX = parallaxEnabled
+      ? THREE.MathUtils.clamp(centroidEma * parallaxCentroidGain, -parallaxClamp, parallaxClamp)
+      : 0;
+    const targetParallaxY = parallaxEnabled
+      ? THREE.MathUtils.clamp(fluxEma * parallaxFluxGain, -parallaxClamp, parallaxClamp)
+      : 0;
+    const baseLerp = THREE.MathUtils.clamp(dispersionCfg.parallaxLerp ?? 0.18, 0.01, 1.0);
+    const attack = Math.min(1, baseLerp * 1.6);
+    const release = Math.min(1, baseLerp * 0.6);
+    const smoothParallax = (current, target) => {
+      const rate = target > current ? attack : release;
+      return THREE.MathUtils.lerp(current, target, rate);
+    };
+    state._parallaxOffsetX = smoothParallax(state._parallaxOffsetX ?? 0, targetParallaxX);
+    state._parallaxOffsetY = smoothParallax(state._parallaxOffsetY ?? 0, targetParallaxY);
+    if (!parallaxEnabled) {
+      state._parallaxOffsetX = THREE.MathUtils.lerp(state._parallaxOffsetX, 0, 0.25);
+      state._parallaxOffsetY = THREE.MathUtils.lerp(state._parallaxOffsetY, 0, 0.25);
+    }
+    state.metrics.parallaxOffsetX = state._parallaxOffsetX;
+    state.metrics.parallaxOffsetY = state._parallaxOffsetY;
+
     if (isBeat && shockCfg.enabled !== false && !isDrop) {
       if (bass > 0.28 || rms > 0.32) {
         const intensity = THREE.MathUtils.clamp((bass * 0.7 + rms * 0.5) * (shockCfg.beatIntensity ?? 0.55), 0.25, 1.1);
@@ -1233,10 +1511,11 @@ export function initScene() {
     state.metrics.ringSpeed = ringSpeedAccum / ringCount;
 
     // Bloom reactivity (centroid boost is user-tunable)
-    const bloomReactive =
+    let bloomReactive =
       state.params.bloomStrengthBase +
       rms * state.params.bloomReactiveGain +
       centroid * (state.params.map.colorBoostFromCentroid ?? 0.2);
+    bloomReactive = Math.max(0, bloomReactive) * (state.effectsBloomScale ?? 1);
     state.bloomEffect.intensity = bloomReactive;
     state.metrics.bloomIntensity = state.bloomEffect.intensity;
 
@@ -1321,11 +1600,13 @@ export function initScene() {
         rms * 0.00025;
       if (isBeat) targetChromatic += (chromaCfg.beat ?? 0.001);
       if (isDrop) targetChromatic += (chromaCfg.drop ?? 0.002);
+      if (typeof perf.chromatic === 'number') targetChromatic += perf.chromatic;
       const lerpFactor = THREE.MathUtils.clamp(chromaCfg.lerp ?? 0.14, 0.02, 0.4);
       state.chromaticIntensity = THREE.MathUtils.lerp(state.chromaticIntensity || 0, targetChromatic, lerpFactor);
-      const offset = Math.min(0.006, Math.max(0, state.chromaticIntensity));
+      const scale = state.effectsChromaticScale ?? 1;
+      const offset = Math.min(0.006, Math.max(0, state.chromaticIntensity * scale));
       state.chromaticEffect.offset.set(offset, offset * 0.65);
-      state.metrics.chromaticEnabled = 1;
+      state.metrics.chromaticEnabled = scale > 0 ? 1 : 0;
       state.metrics.chromaticOffset = offset;
       state.metrics.chromaticOffsetY = offset * 0.65;
     } else {
@@ -1337,7 +1618,8 @@ export function initScene() {
     // Camera FOV pump from bass (use sub+bass for kick focus)
     const baseFov = 75;
     const pump = Math.max(0, (0.7 * bass + 0.3 * sub)) * (state.params.map.fovPumpFromBass || 0);
-    state.camera.fov = baseFov + pump * 10.0;
+    const perfFov = (typeof perf.cameraFovDelta === 'number') ? perf.cameraFovDelta : 0;
+    state.camera.fov = baseFov + pump * 10.0 + perfFov;
     state.camera.far = 50000; state.camera.updateProjectionMatrix();
     state.metrics.cameraFov = state.camera.fov;
 
@@ -1360,28 +1642,38 @@ export function initScene() {
 
     // Sparks: emit on beats and breathe with RMS
     if (state.sparks) {
-      const g = state.sparks.geometry;
-      const pos = g.attributes.position.array;
-      const life = g.attributes.life.array;
-      const N = life.length;
-      let alive = 0;
-      for (let i = 0; i < N; i++) {
-        // decay
-        life[i] = Math.max(0, life[i] - dt * 0.8);
-        if (features?.beat && Math.random() < 0.1) {
-          // respawn a subset on beat
-          const i3 = i * 3; const r = 0.5 + Math.random() * 1.5;
-          const theta = Math.random() * Math.PI * 2; const phi = Math.acos(2*Math.random()-1);
-          pos[i3] = Math.cos(theta) * Math.sin(phi) * r;
-          pos[i3+1] = Math.sin(theta) * Math.sin(phi) * r;
-          pos[i3+2] = Math.cos(phi) * r;
-          life[i] = 1.0;
+      // Throttle spark updates when FPS is low to save CPU
+      const approxFps = dt > 1e-6 ? Math.min(240, Math.max(1, 1 / dt)) : 60;
+      const fpsTarget = state.params.targetFps || 60;
+      const lowFps = approxFps < (fpsTarget - 10);
+      state._sparkStep = (state._sparkStep || 0) + 1;
+      const shouldUpdate = !lowFps || (state._sparkStep % 2 === 0);
+      if (shouldUpdate) {
+        const g = state.sparks.geometry;
+        const pos = g.attributes.position.array;
+        const life = g.attributes.life.array;
+        const N = life.length;
+        let alive = 0;
+        // Lower respawn probability when FPS is low
+        const respawnP = features?.beat ? (lowFps ? 0.05 : 0.1) : 0;
+        for (let i = 0; i < N; i++) {
+          // decay
+          life[i] = Math.max(0, life[i] - dt * 0.8);
+          if (respawnP && Math.random() < respawnP) {
+            // respawn a subset on beat
+            const i3 = i * 3; const r = 0.5 + Math.random() * 1.5;
+            const theta = Math.random() * Math.PI * 2; const phi = Math.acos(2*Math.random()-1);
+            pos[i3] = Math.cos(theta) * Math.sin(phi) * r;
+            pos[i3+1] = Math.sin(theta) * Math.sin(phi) * r;
+            pos[i3+2] = Math.cos(phi) * r;
+            life[i] = 1.0;
+          }
+          if (life[i] > 0.05) alive++;
         }
-        if (life[i] > 0.05) alive++;
+        g.attributes.life.needsUpdate = true; g.attributes.position.needsUpdate = true;
+        state.metrics.sparksActive = 1;
+        state.metrics.sparksAlive = N ? alive / N : 0;
       }
-      g.attributes.life.needsUpdate = true; g.attributes.position.needsUpdate = true;
-      state.metrics.sparksActive = 1;
-      state.metrics.sparksAlive = N ? alive / N : 0;
     } else {
       state.metrics.sparksActive = 0;
       state.metrics.sparksAlive = 0;
@@ -1395,7 +1687,10 @@ export function initScene() {
       const enable = state.params.enableDispersion !== false;
       try { state.dispersion.layer.setEnabled(enable); } catch(_) {}
       if (enable) {
-        const d = state.params.dispersion || {};
+        // Ensure shader variant is applied if changed at runtime (no forced override here)
+        try { state.dispersion.layer.setVariant?.(state.params.dispersionShaderVariant || 'classic'); } catch(_) {}
+        const d = dispersionParams;
+        let twistFlippedThisFrame = false;
         const zoomGain = typeof d.zoomGain === 'number' ? d.zoomGain : 28.0;
         const zoomBias = typeof d.zoomBias === 'number' ? d.zoomBias : -10.0;
         const zoomLerp = typeof d.zoomLerp === 'number' ? d.zoomLerp : 0.1;
@@ -1410,25 +1705,49 @@ export function initScene() {
         const warpOnDropBoost = typeof d.warpOnDropBoost === 'number' ? d.warpOnDropBoost : 0.6;
         const tintHue = typeof d.tintHue === 'number' ? d.tintHue : 0.0;
         const tintSat = typeof d.tintSat === 'number' ? d.tintSat : 0.0;
-        const tintMix = typeof d.tintMix === 'number' ? d.tintMix : 0.0;
+        const tintMixBase = typeof d.tintMixBase === 'number'
+          ? d.tintMixBase
+          : (typeof d.tintMix === 'number' ? d.tintMix : 0.0);
+        const tintMixChromaGain = typeof d.tintMixChromaGain === 'number' ? d.tintMixChromaGain : 0.45;
+        const tintMixMax = typeof d.tintMixMax === 'number' ? d.tintMixMax : 0.85;
+        const chromaEnergy = THREE.MathUtils.clamp(state.metrics.chromaEnergy ?? dominantChromaEnergy ?? 0, 0, 1);
+        const tintMixTarget = THREE.MathUtils.clamp(tintMixBase + chromaEnergy * tintMixChromaGain, 0, tintMixMax);
+        if (!Number.isFinite(state._tintMix)) state._tintMix = tintMixTarget;
+        state._tintMix = THREE.MathUtils.lerp(state._tintMix, tintMixTarget, 0.25);
+        const tintMix = state._tintMix;
+        state.metrics.tintMix = tintMix;
         const brightBase = typeof d.brightness === 'number' ? d.brightness : 1.0;
         const brightGain = typeof d.brightnessGain === 'number' ? d.brightnessGain : 0.4;
         const contrastBase = typeof d.contrast === 'number' ? d.contrast : 1.0;
         const contrastGain = typeof d.contrastGain === 'number' ? d.contrastGain : 0.3;
 
-        const zoomTarget = THREE.MathUtils.clamp((bass * 1.2 + rms * 0.6) * zoomGain + zoomBias, -30.0, 30.0);
+        let zoomTarget = THREE.MathUtils.clamp((bass * 1.2 + rms * 0.6) * zoomGain + zoomBias, -30.0, 30.0);
+        if (typeof perf.dispersionZoom === 'number') {
+          zoomTarget = THREE.MathUtils.clamp(zoomTarget + perf.dispersionZoom, -30.0, 30.0);
+        }
+        // perf.dispersionZoomPulse reserved (not used currently)
+        if (typeof perf.zoomSnap === 'number' && perf.zoomSnap) {
+          zoomTarget = THREE.MathUtils.clamp(zoomTarget + perf.zoomSnap, -30.0, 30.0);
+        }
+        if (typeof perf.zoomBounce === 'number' && perf.zoomBounce) {
+          zoomTarget = THREE.MathUtils.clamp(zoomTarget + perf.zoomBounce, -30.0, 30.0);
+        }
         state.dispersion.zoom = THREE.MathUtils.lerp(state.dispersion.zoom || 0, zoomTarget, zoomLerp);
-        // Lock to center (no mouse parallax)
-        const targetOffsetX = 0.0;
-        const targetOffsetY = 0.0;
-        state.dispersion.offsetX = THREE.MathUtils.lerp(state.dispersion.offsetX || 0, targetOffsetX, 0.25);
-        state.dispersion.offsetY = THREE.MathUtils.lerp(state.dispersion.offsetY || 0, targetOffsetY, 0.25);
-        const opacityTarget = THREE.MathUtils.clamp(opacityBase + treble * opacityTrebleGain, opacityMin, opacityMax);
+        const parallaxOffsetX = state._parallaxOffsetX ?? 0;
+        const parallaxOffsetY = state._parallaxOffsetY ?? 0;
+        const centerK = (typeof perf.centering === 'number') ? THREE.MathUtils.clamp(perf.centering, 0, 1) : 0;
+        // Pull offsets towards center while active so the zoom is centered
+        state.dispersion.offsetX = parallaxOffsetX * (1 - centerK);
+        state.dispersion.offsetY = parallaxOffsetY * (1 - centerK);
+        let opacityTarget = THREE.MathUtils.clamp(opacityBase + treble * opacityTrebleGain, opacityMin, opacityMax);
+        if (typeof perf.dispersionOpacityBoost === 'number') {
+          opacityTarget = THREE.MathUtils.clamp(opacityTarget + perf.dispersionOpacityBoost, 0.0, 1.0);
+        }
         state.dispersion.opacity = THREE.MathUtils.lerp(state.dispersion.opacity || opacityTarget, opacityTarget, opacityLerp);
         let warpSource = 0;
         if (warpFrom === 'bass') warpSource = bass; else if (warpFrom === 'mid') warpSource = mid; else if (warpFrom === 'treble') warpSource = treble; else if (warpFrom === 'rms') warpSource = rms; else warpSource = bass;
         let warp = warpSource * warpGain + (warpOnBeat && isBeat ? 0.25 : 0) + (isDrop ? warpOnDropBoost : 0);
-        warp = Math.max(0, warp);
+        warp = Math.max(0, warp + (typeof perf.dispersionWarp === 'number' ? perf.dispersionWarp : 0));
         const hue = (tintHue + state.metrics.chromaHue) - Math.floor(tintHue + state.metrics.chromaHue);
         const sat = THREE.MathUtils.clamp(tintSat, 0, 1);
         const val = 1.0;
@@ -1443,7 +1762,7 @@ export function initScene() {
         else if (hue < 5.0/6.0) { rt = x; gt = 0.0; bt = c; }
         else { rt = c; gt = 0.0; bt = x; }
         const tintColor = new THREE.Color(rt + m, gt + m, bt + m);
-        const brightness = brightBase + brightGain * rms;
+        const brightness = brightBase + brightGain * rms + (typeof perf.dispersionBrightnessBoost === 'number' ? perf.dispersionBrightnessBoost : 0);
         const contrast = contrastBase + contrastGain * (bass * 0.6 + treble * 0.4);
 
         // Twist synthesis
@@ -1454,12 +1773,29 @@ export function initScene() {
         const twistOnsetGain = typeof d.twistOnsetGain === 'number' ? d.twistOnsetGain : 0.25;
         const twistFluxGain = typeof d.twistFluxGain === 'number' ? d.twistFluxGain : 0.15;
         const twistStutterGain = typeof d.twistStutterGain === 'number' ? d.twistStutterGain : 0.2;
-        const twistLerp = typeof d.twistLerp === 'number' ? d.twistLerp : 0.14;
+        const twistAttack = typeof d.twistAttack === 'number' ? d.twistAttack : 0.32;
+        const twistRelease = typeof d.twistRelease === 'number' ? d.twistRelease : 0.14;
+        const pulseHalfLifeMs = typeof d.pulseHalfLifeMs === 'number' ? d.pulseHalfLifeMs : 160;
         const twistFalloff = typeof d.twistFalloff === 'number' ? d.twistFalloff : 1.2;
         const stutterWindowMs = typeof d.stutterWindowMs === 'number' ? d.stutterWindowMs : 180;
         const flipOnStutter = d.flipOnStutter !== false;
+        const downbeatTwistBoost = typeof d.downbeatTwistBoost === 'number' ? d.downbeatTwistBoost : 0.3;
+        const flipEveryNBeats = Math.max(0, Math.floor(typeof d.flipEveryNBeats === 'number' ? d.flipEveryNBeats : 0));
+        if (state.dispersion._flipSetting !== flipEveryNBeats) {
+          state.dispersion._flipSetting = flipEveryNBeats;
+          state.dispersion._flipBeatAccumulator = 0;
+        }
+        if (flipEveryNBeats <= 0) {
+          state.dispersion._flipBeatAccumulator = 0;
+        } else if (isBeat) {
+          state.dispersion._flipBeatAccumulator = (state.dispersion._flipBeatAccumulator || 0) + 1;
+          if (downbeatPulse && state.dispersion._flipBeatAccumulator >= flipEveryNBeats) {
+            state.dispersion.twistDir = (state.dispersion.twistDir || 1) * -1;
+            state.dispersion._flipBeatAccumulator = 0;
+            twistFlippedThisFrame = true;
+          }
+        }
 
-        const nowMs = performance.now();
         // Track onsets for stutter detection
         if (features?.aubioOnset) {
           state.dispersion.stutterTimes.push(nowMs);
@@ -1468,34 +1804,99 @@ export function initScene() {
         const cutoff = nowMs - Math.max(80, stutterWindowMs);
         state.dispersion.stutterTimes = state.dispersion.stutterTimes.filter(t0 => t0 >= cutoff);
         const stutterCount = state.dispersion.stutterTimes.length >= 2 ? 1 : 0;
-        if (stutterCount && flipOnStutter) state.dispersion.twistDir = (state.dispersion.twistDir || 1) * -1;
+        if (stutterCount && flipOnStutter && !twistFlippedThisFrame) {
+          state.dispersion.twistDir = (state.dispersion.twistDir || 1) * -1;
+          twistFlippedThisFrame = true;
+        }
 
         const fluxZ = (features && typeof features.fluxStd === 'number' && features.fluxStd > 1e-6)
           ? Math.max(0, (features.flux - features.fluxMean) / Math.max(1e-3, features.fluxStd))
           : 0;
 
+        const decayAlpha = 1.0 - Math.exp(-dt * 1000.0 / Math.max(10, pulseHalfLifeMs));
+        state.dispersion._beatEnv = (state.dispersion._beatEnv || 0) * (1 - decayAlpha) + (isBeat ? 1 : 0) * decayAlpha;
+        state.dispersion._onsetEnv = (state.dispersion._onsetEnv || 0) * (1 - decayAlpha) + ((features?.aubioOnset ? 1 : 0)) * decayAlpha;
+        state.dispersion._fluxEnv = (state.dispersion._fluxEnv || 0) * (1 - decayAlpha) + (fluxZ) * decayAlpha;
+        state.dispersion._downbeatEnv = (state.dispersion._downbeatEnv || 0) * (1 - decayAlpha) + (downbeatPulse ? 1 : 0) * decayAlpha;
+
         let twistTarget = twistBase
           + bass * twistBassGain
-          + (isBeat ? twistBeatGain : 0)
-          + ((features?.aubioOnset ? 1 : 0) * twistOnsetGain)
-          + fluxZ * twistFluxGain
+          + state.dispersion._beatEnv * twistBeatGain
+          + state.dispersion._onsetEnv * twistOnsetGain
+          + state.dispersion._fluxEnv * twistFluxGain
+          + state.dispersion._downbeatEnv * downbeatTwistBoost
           + stutterCount * twistStutterGain;
+        if (typeof perf.dispersionTwistBoost === 'number') twistTarget += perf.dispersionTwistBoost;
         twistTarget = THREE.MathUtils.clamp(twistTarget, 0, twistMax);
-        state.dispersion.twist = THREE.MathUtils.lerp(state.dispersion.twist || 0, twistTarget, twistLerp);
+        {
+          const current = state.dispersion.twist || 0;
+          const lerpRate = twistTarget > current ? twistAttack : twistRelease;
+          state.dispersion.twist = THREE.MathUtils.lerp(current, twistTarget, THREE.MathUtils.clamp(lerpRate, 0, 1));
+        }
 
         // Travel accumulation (forward motion)
         const travelBase = typeof d.travelBase === 'number' ? d.travelBase : 0.06;
         const travelGain = typeof d.travelGain === 'number' ? d.travelGain : 0.12;
         const travelBeatBoost = typeof d.travelBeatBoost === 'number' ? d.travelBeatBoost : 0.06;
         const travelDropBoost = typeof d.travelDropBoost === 'number' ? d.travelDropBoost : 0.12;
-        const travelLerp = typeof d.travelLerp === 'number' ? d.travelLerp : 0.06;
-        const travelSpeedTarget = travelBase + rms * travelGain + (isBeat ? travelBeatBoost : 0) + (isDrop ? travelDropBoost : 0);
-        state.dispersion.travelSpeed = THREE.MathUtils.lerp(state.dispersion.travelSpeed || travelSpeedTarget, travelSpeedTarget, travelLerp);
+        const travelAttack = typeof d.travelAttack === 'number' ? d.travelAttack : 0.20;
+        const travelRelease = typeof d.travelRelease === 'number' ? d.travelRelease : 0.08;
+        const travelModulo = typeof d.travelModulo === 'number' ? d.travelModulo : 400;
+        let travelSpeedTarget = travelBase + rms * travelGain + (isBeat ? travelBeatBoost : 0) + (isDrop ? travelDropBoost : 0);
+        if (typeof perf.dispersionTravelBoost === 'number') travelSpeedTarget += perf.dispersionTravelBoost;
+        {
+          const current = state.dispersion.travelSpeed || travelSpeedTarget;
+          const lr = travelSpeedTarget > current ? travelAttack : travelRelease;
+          state.dispersion.travelSpeed = THREE.MathUtils.lerp(current, travelSpeedTarget, THREE.MathUtils.clamp(lr, 0, 1));
+        }
         state.dispersion.travel = (state.dispersion.travel || 0) + state.dispersion.travelSpeed * dt * 60.0; // scale for frame-rate
+        if (travelModulo > 1) {
+          const m = travelModulo;
+          state.dispersion.travel = ((state.dispersion.travel % m) + m) % m;
+        }
 
         try {
           const dbSize = new THREE.Vector2();
           try { state.renderer.getDrawingBufferSize(dbSize); } catch(_) {}
+          const dcfg = d; // alias
+          // Variant-specific reactive mapping for Vortex Drill
+          const isVortex = (state.params.dispersionShaderVariant === 'vortexDrill');
+          let drillBoxVal = dcfg.drillBox ?? 1.5;
+          let drillRadiusVal = dcfg.drillRadius ?? 1.0;
+          let repPeriodVal = dcfg.repPeriod ?? 4.0;
+          let rotDepthVal = dcfg.rotDepth ?? 0.10;
+          let stepsVal = dcfg.steps ?? 300;
+          if (isVortex) {
+            const att = 0.28, rel = 0.16;
+            const smooth = (current, target) => {
+              const cur = (typeof current === 'number' && isFinite(current)) ? current : target;
+              return THREE.MathUtils.lerp(cur, target, target > cur ? att : rel);
+            };
+            const boxTarget = THREE.MathUtils.clamp((dcfg.drillBox ?? 1.5) - bass * 0.25 - (downbeatPulse ? 0.12 : 0) - (isDrop ? 0.18 : 0), 0.8, 2.8);
+            state.dispersion.drillBox = smooth(state.dispersion.drillBox, boxTarget);
+            const radiusTarget = THREE.MathUtils.clamp((dcfg.drillRadius ?? 1.0) + treble * 0.35 + (isBeat ? 0.06 : 0) + (isDrop ? 0.12 : 0), 0.5, 1.8);
+            state.dispersion.drillRadius = smooth(state.dispersion.drillRadius, radiusTarget);
+            const repTarget = THREE.MathUtils.clamp((dcfg.repPeriod ?? 4.0) + centroid * 1.2 + (state.dispersion._fluxEnv || 0) * 0.5, 2.0, 8.0);
+            state.dispersion.repPeriod = smooth(state.dispersion.repPeriod, repTarget);
+            const rotTarget = THREE.MathUtils.clamp((dcfg.rotDepth ?? 0.10) + bass * 0.06 + (state.dispersion._beatEnv || 0) * 0.05 + (state.dispersion._onsetEnv || 0) * 0.03, 0.0, 0.25);
+            state.dispersion.rotDepth = smooth(state.dispersion.rotDepth, rotTarget);
+            const stepsTarget = THREE.MathUtils.clamp((dcfg.steps ?? 300) + (isDrop ? 30 : 0) + ((state.renderer.getPixelRatio?.() || 1) >= 1.25 ? 10 : 0), 60, 420);
+            state.dispersion.steps = stepsTarget;
+            drillBoxVal = state.dispersion.drillBox;
+            drillRadiusVal = state.dispersion.drillRadius;
+            repPeriodVal = state.dispersion.repPeriod;
+            rotDepthVal = state.dispersion.rotDepth;
+            stepsVal = state.dispersion.steps;
+          }
+          // Push variant-specific uniforms
+          if (state.dispersion?.layer?.material?.uniforms) {
+            const u = state.dispersion.layer.material.uniforms;
+            if (u.uDrillBox) u.uDrillBox.value = THREE.MathUtils.clamp(drillBoxVal, 0.5, 4.0);
+            if (u.uDrillRadius) u.uDrillRadius.value = THREE.MathUtils.clamp(drillRadiusVal, 0.2, 3.0);
+            if (u.uRepPeriod) u.uRepPeriod.value = THREE.MathUtils.clamp(repPeriodVal, 1.0, 12.0);
+            if (u.uRotDepth) u.uRotDepth.value = THREE.MathUtils.clamp(rotDepthVal, 0.0, 0.4);
+            if (u.uSteps) u.uSteps.value = THREE.MathUtils.clamp(stepsVal, 60, 450);
+          }
           state.dispersion.layer.update({
             time: t,
             zoom: state.dispersion.zoom,
@@ -1536,6 +1937,8 @@ export function initScene() {
     rebuildParticles,
     setEnableSparks,
     setUseLensflare,
+    setEffectsProfile,
+    resetVisualPipeline,
     setEyeEnabled,
     setEyeCorneaEnabled,
     setEyePredatorMode,
@@ -1543,6 +1946,7 @@ export function initScene() {
     onResize,
     onMouseMove,
     update,
+    setUniformDeltasProvider: (fn) => { state._perfDeltasProvider = typeof fn === 'function' ? fn : null; },
     setVisualMode: (mode) => { try { setupVisualMode(mode); } catch(_) {} },
     getPixelRatio: () => state.renderer.getPixelRatio(),
   };

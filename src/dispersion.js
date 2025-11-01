@@ -3,7 +3,7 @@ import { RenderPass } from 'postprocessing';
 
 // Builds a full-screen overlay scene using the provided dispersion fragment shader.
 // Exposes a RenderPass for the existing composer and an update() method to feed uniforms.
-export function createDispersionLayer() {
+export function createDispersionLayer(initialVariant = 'classic') {
   const overlayScene = new THREE.Scene();
   const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, -1, 1);
 
@@ -13,8 +13,8 @@ export function createDispersionLayer() {
     }
   `;
 
-  // Based on user's dispersion shader; extended with tint, brightness/contrast, warp, and twist
-  const fragmentShader = `
+  // Classic Dispersion shader — extended with tint, brightness/contrast, warp, and twist
+  const fragmentShaderClassic = `
     precision highp float;
     uniform vec2 r; // resolution
     uniform float t; // time
@@ -221,6 +221,94 @@ export function createDispersionLayer() {
     }
   `;
 
+  // Vortex Drill shader — visually matches the provided reference, extended with our uniforms
+  const fragmentShaderVortexDrill = `
+    precision highp float;
+    uniform vec2 r;             // resolution
+    uniform float t;            // time
+    uniform float zoom;         // unused for shape, preserved for API compat
+    uniform vec2 offset;        // parallax offset (pixels scaled below)
+    uniform float uOpacity;     // overlay opacity
+    uniform float uWarp;        // drives inner warping
+    uniform vec3 uTint;         // tint color
+    uniform float uTintMix;     // tint mix
+    uniform float uBrightness;  // brightness
+    uniform float uContrast;    // contrast
+    uniform float uTwist;       // extra twist
+    uniform float uTwistFalloff;// not used directly, preserved
+    uniform float uTravel;      // forward travel
+    // Variant-specific controls (hooked from params)
+    uniform float uDrillBox;    // half-size of tunnel box
+    uniform float uDrillRadius; // radius of drill hole
+    uniform float uRepPeriod;   // repeat period for modulo
+    uniform float uRotDepth;    // rotation factor over depth
+    uniform float uSteps;       // number of iterations (quality)
+
+    vec4 Tanh(vec4 x) {
+      vec4 ex = exp(x);
+      vec4 emx = exp(-x);
+      return (ex - emx) / (ex + emx);
+    }
+    mat2 rotate(float a) {
+      float s = sin(a);
+      float c = cos(a);
+      return mat2(c, -s, s, c);
+    }
+
+    void main() {
+      vec2 FC = gl_FragCoord.xy;
+      // Apply small parallax shift in pixel space
+      float px = 0.5 * min(r.x, r.y);
+      FC += vec2(offset.x, offset.y) * px;
+
+      float i, z, d, s;
+      vec4 o = vec4(0.0);
+
+      // Slight warp factor for audio drive
+      float warp = 1.0 + max(0.0, uWarp);
+      float steps = clamp(uSteps, 60.0, 450.0);
+      for(i = 0.0; i < steps; i += 1.0) {
+        // Ray-like marching direction
+        vec3 p = z * normalize(vec3(FC.xy, 0.0) * 2.0 - r.xyy);
+        vec3 a = p;
+        p.z += 5.0 + t + uTravel;
+
+        vec3 q = p;
+        // Match reference drill rotation with additional controllable twist
+        q.xy *= rotate(q.z * (0.1 + uRotDepth) + uTwist);
+        vec3 q_rep = mod(q, uRepPeriod) - 0.5 * uRepPeriod;
+
+        float tunnel_box = max(abs(q.x), abs(q.y)) - uDrillBox;
+        float drill_hole = length(q_rep) - uDrillRadius;
+        float final_shape = max(tunnel_box, -drill_hole);
+
+        for(d = 2.0; d++ < 7.0;) {
+          // Use ceil() as in the reference and scale by warp
+          a -= sin(ceil(a * d + t)).xzy / d * warp;
+        }
+
+        z += d = final_shape * 0.4 + 0.2 * abs(cos(s = a.y + t));
+        o += (cos(s - t + vec4(0.0, 1.0, 8.0, 0.0)) + 1.0) / max(d, 0.0005);
+      }
+
+      vec3 col = Tanh(o / steps).rgb;
+      // Tone & tint controls
+      col = (col - 0.5) * max(0.0, uContrast) + 0.5;
+      col *= max(0.0, uBrightness);
+      col = mix(col, uTint, clamp(uTintMix, 0.0, 1.0));
+      gl_FragColor = vec4(col, uOpacity);
+    }
+  `;
+
+  const FRAGMENT_SHADERS = Object.freeze({
+    classic: fragmentShaderClassic,
+    vortexDrill: fragmentShaderVortexDrill,
+  });
+
+  function getFragmentShader(variant) {
+    return FRAGMENT_SHADERS[variant] || FRAGMENT_SHADERS.classic;
+  }
+
   const geometry = new THREE.PlaneGeometry(2, 2);
   const material = new THREE.ShaderMaterial({
     uniforms: {
@@ -237,9 +325,14 @@ export function createDispersionLayer() {
       uTwist: { value: 0.0 },
       uTwistFalloff: { value: 1.2 },
       uTravel: { value: 0.0 },
+      uDrillBox: { value: 1.5 },
+      uDrillRadius: { value: 1.0 },
+      uRepPeriod: { value: 4.0 },
+      uRotDepth: { value: 0.10 },
+      uSteps: { value: 300.0 },
     },
     vertexShader,
-    fragmentShader,
+    fragmentShader: getFragmentShader(initialVariant),
     transparent: true,
     depthWrite: false,
     depthTest: false,
@@ -285,7 +378,16 @@ export function createDispersionLayer() {
     pass.enabled = !!enabled;
   }
 
-  return { scene: overlayScene, camera, mesh, material, pass, setSize, update, setEnabled };
+  function setVariant(variant) {
+    const next = String(variant || 'classic');
+    const src = getFragmentShader(next);
+    if (src && material) {
+      material.fragmentShader = src;
+      material.needsUpdate = true;
+    }
+  }
+
+  return { scene: overlayScene, camera, mesh, material, pass, setSize, update, setEnabled, setVariant };
 }
 
 

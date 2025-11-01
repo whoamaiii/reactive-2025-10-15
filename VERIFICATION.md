@@ -15,21 +15,16 @@ find . -name "*.js" -type f -exec node --check {} \;
 - No syntax errors
 - All files are valid ES modules
 
-### 2. Security Audit
+### 2. Security & Hygiene Audit
 
 **innerHTML Usage**: ✅ CLEARED
 - No remaining `innerHTML =` patterns in src/
 - Replaced with safe `replaceChildren()` method
-- Lines 332, 337 in settings-ui.js confirmed
 
-**CDN Version Pinning**: ✅ CLEARED
+**Bundling & Offline**: ✅ CLEARED
+- Vite bundling active; no runtime import map or shim required
+- Local-first for Essentia worker and HDR textures
 - No `@latest` versions in dependencies
-- All CDN URLs use specific versions (6.3.2)
-- Verified in src/audio.js lines 10-12
-
-**External Content**: ✅ CLEARED
-- All import map entries pinned to specific versions
-- Import map shim loaded from trusted CDN (jspm.io)
 
 ---
 
@@ -69,18 +64,15 @@ find . -name "*.js" -type f -exec node --check {} \;
 ---
 
 ### 3. Toast Notification System
-**CSS Styling**: `index.html` lines 67-97  
+**CSS Styling**: `index.html`  
 **Status**: ✅ Properly styled
 - Glass morphism design
-- Animated gradient border
-- Proper z-index (70)
-- Fade in/out transitions
+- Proper z-index and transitions
 
-**Dynamic Creation**: Multiple files  
-**Status**: ✅ Created on-demand by JavaScript
-- Toast element created programmatically when needed
-- Prevents unnecessary DOM elements
-- Consistent implementation across all usage points
+**Centralized Helper**: `src/toast.js`  
+**Status**: ✅ Unified
+- Single `showToast()` used across app
+- Prevents duplicate implementations and overlapping toasts
 
 ---
 
@@ -149,15 +141,11 @@ particleDensity: 0.9, // 0.9 = slightly reduced for better perf on mid-range GPU
 
 ---
 
-### 8. Import Map Shim (NEW)
-**File**: `index.html` line 168  
-**Status**: ✅ Loaded correctly
-```html
-<script async src="https://ga.jspm.io/npm:es-module-shims@1.10.0/dist/es-module-shims.js"></script>
-```
-- Loads before import map
-- Provides fallback for older Safari/Firefox
-- Async loading (non-blocking)
+### 8. Resume Watchdog (NEW)
+**Files**: `src/main.js`  
+**Status**: ✅ Implemented
+- On focus/pointerdown: resumes AudioContext where allowed
+- In RAF: periodic resume nudge when visible + suspended
 
 ---
 
@@ -275,16 +263,12 @@ index.html               (203 lines)
 ## ✅ Runtime Requirements
 
 ### Server
-**Python 3**: ✅ Installed (v3.13.3)
+Use show helper script:
 ```bash
-python3 -m http.server 5173
+./scripts/show-start.sh
 ```
 
-### Alternative Servers
-- Node: `npx http-server -p 5173`
-- Any static HTTP server
-
-**Port**: 5173 (configurable)
+**Port**: 5173 (configurable via Vite)
 
 ---
 
@@ -359,16 +343,21 @@ python3 -m http.server 5173
 ## ✅ Test Checklist
 
 ### Quick Smoke Test
-1. ✅ Start server: `python3 -m http.server 5173`
+1. ✅ Start: `./scripts/show-start.sh`
 2. ✅ Open: http://localhost:5173
 3. ✅ Verify no console errors (without ?debug)
 4. ✅ Drag-and-drop audio file
-5. ✅ Click "Learn more" button
-6. ✅ Open Settings (S key or ⚙️ button)
-7. ✅ Check FPS stabilizes around 60
+5. ✅ Click "Learn more" (system audio help)
+6. ✅ Open Settings (S key or ⚙️)
+7. ✅ FPS stabilizes near target; auto-res nudges pixel ratio
 
-### Detailed Feature Test
-See **QUICKSTART.md** for full test procedure
+### Audio Gating & Noise Gate
+- Quiet room (mic selected): enable Noise Gate and run Calibrate (5s) → beats ≈ 0
+- DnB input: set Beat Refractory ~300–400ms, Energy Floor ~0.3–0.5 → stable downbeats, fewer doubles
+
+### Sync/OSC
+- Bridge heartbeat every 5s shows client counts
+- Feature packets ~30 Hz observed
 
 ---
 

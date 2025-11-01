@@ -57,6 +57,8 @@ function sanitizeFeatures(features) {
     buildLevel: features.buildLevel,
     lastDropMs: features.lastDropMs,
     bpm: features.bpm,
+    bpmConfidence: features.bpmConfidence,
+    bpmSource: features.bpmSource,
     tapBpm: features.tapBpm,
     mfcc: Array.isArray(features.mfcc) ? features.mfcc.slice() : undefined,
     chroma: Array.isArray(features.chroma) ? features.chroma.slice() : undefined,
@@ -322,6 +324,13 @@ export class SyncCoordinator {
       if (this.role === 'receiver') this._handleCommand(payload);
       return;
     }
+
+    if (type === 'padEvent') {
+      if (this.role === 'receiver') {
+        try { this._onPadEvent && this._onPadEvent(payload?.event); } catch (_) {}
+      }
+      return;
+    }
   }
 
   _handleCommand(payload) {
@@ -511,5 +520,15 @@ export class SyncCoordinator {
     if (!name) return;
     const target = this.role === 'control' ? 'receiver' : 'control';
     this._sendMessage('command', { name }, { target });
+  }
+
+  // Performance pad events (broadcast to the other role)
+  setPadEventHandler(handler) {
+    this._onPadEvent = typeof handler === 'function' ? handler : null;
+  }
+  sendPadEvent(event) {
+    if (!event) return;
+    const target = this.role === 'control' ? 'receiver' : 'control';
+    this._sendMessage('padEvent', { event }, { target });
   }
 }

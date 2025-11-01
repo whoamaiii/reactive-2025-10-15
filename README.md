@@ -28,10 +28,12 @@ Open the glass **Settings** drawer by clicking the ⚙️ button (bottom-right) 
 - **Visuals**: Theme swatches (nebula/sunset/forest/aurora), HDR background, fog density, bloom (base + reactive), pixel ratio, auto-rotation, particle density, sparks, lens flare, auto-resolution (target FPS, min pixel ratio).
 - **Mapping**: Fine-tune audio-reactive mappings—sphere size from RMS, ring scale/speed from frequency bands, camera shake from beat, bloom color boost from spectral centroid, core brightness/noise from audio features, light intensity from bass, band weighting (bass/mid/treble), star twinkle from treble, ring tilt from bass.
 - **Tempo**: Tempo assist (auto BPM for files, live Aubio tempo), tap tempo with quantize, phase nudge, and multiplier controls.
-- **Presets**: Save/load/import/export preset configurations; reset to defaults.
+- **Presets**: Quick-save/duplicate active presets and launch the separate preset library window (press **L**).
 - **Session**: FPS monitor and screenshot capture.
 
-**Quick actions**: Press **S** to toggle settings, drag-and-drop audio files to load them, click "Learn more" for system audio help, and use the **Save Settings** footer button to persist your current setup (it auto-loads on refresh).
+**Quick actions**: Press **S** to toggle settings, **L** to open the preset library (popup with search, tags, favourites, recents, version history), drag-and-drop audio files to load them, click "Learn more" for system audio help, and use the **Save Settings** footer button to persist your current setup (it auto-loads on refresh).
+
+For a full walkthrough of the new preset workflow see [`docs/preset-library.md`](docs/preset-library.md).
 
 ## Technical Notes
 - **Auto-resolution** is enabled by default and dynamically adjusts pixel ratio to maintain target FPS (default 60 FPS).

@@ -1,297 +1,664 @@
 <!doctype html>
+<!--
+  Main HTML Entry Point
+  =====================
+  
+  This is the main HTML file that serves as the entry point for the entire application.
+  Think of it like the foundation of a house - everything else builds on top of this.
+  
+  Structure:
+  1. Head section: Sets up page metadata, fonts, and styles
+  2. Body section: Contains the UI elements (settings drawer, buttons, canvas)
+  3. Script section: Loads and starts the main JavaScript application
+  
+  The page creates a full-screen canvas for 3D graphics and overlays a settings panel
+  that slides in from the right side. All styling is "glassmorphism" - translucent,
+  blurred backgrounds that look like frosted glass.
+-->
 <html lang="en">
   <head>
+    <!-- Character encoding: tells the browser how to interpret text characters -->
     <meta charset="UTF-8" />
+    <!-- Viewport: makes the page responsive on mobile devices -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Page title: appears in the browser tab -->
     <title>Interactive Cosmic Anomaly — Audio Reactive</title>
+    
     <!-- Inline favicon to avoid dev-server 404 noise -->
+    <!-- A favicon is the small icon in the browser tab - we embed it directly as SVG data -->
+    <!-- This avoids having to load a separate file, which can cause errors during development -->
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%94%A5%3C/text%3E%3C/svg%3E" />
+    
+    <!-- Preconnect to Google Fonts: tells the browser to start connecting early -->
+    <!-- This speeds up font loading by establishing the connection before we need it -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    
+    <!-- Load the Inter font family from Google Fonts -->
+    <!-- Inter is a modern, readable sans-serif font that looks good on screens -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    
+    <!-- 
+      Embedded CSS Styles
+      ===================
+      
+      All the visual styling for the page is defined here. This includes:
+      - Colors and design tokens (CSS variables)
+      - Layout and positioning
+      - Animations and transitions
+      - Glassmorphism effects (translucent, blurred backgrounds)
+      
+      CSS Variables (defined in :root):
+      - --glass-bg: Semi-transparent white for glass backgrounds
+      - --glass-border: Slightly more opaque white for borders
+      - --text: White text color
+      - --accent: Cyan accent color (#00ffff)
+    -->
     <style>
+      /* CSS Variables - Design Tokens
+         These are like color swatches that can be reused throughout the stylesheet.
+         If you want to change the accent color, you only change it here, and it updates everywhere.
+      */
       :root {
-        --glass-bg: rgba(255, 255, 255, 0.08);
-        --glass-border: rgba(255, 255, 255, 0.2);
-        --text: #ffffff;
-        --accent: #00ffff;
+        --glass-bg: rgba(255, 255, 255, 0.08);      /* Semi-transparent white for glass backgrounds (8% opacity) */
+        --glass-border: rgba(255, 255, 255, 0.2);   /* More opaque white for borders (20% opacity) */
+        --text: #ffffff;                              /* Pure white for text */
+        --accent: #00ffff;                            /* Cyan accent color for highlights and links */
       }
+      
+      /* Reset box-sizing for all elements */
+      /* This makes padding and borders included in element width/height calculations */
+      /* Without this, an element with width: 100% and padding would overflow */
       * { box-sizing: border-box; }
+      
+      /* Base page styles */
+      /* Sets up the page as a full-screen, black background with no scrolling */
       html, body {
-        margin: 0;
-        padding: 0;
-        width: 100%;
-        height: 100%;
-        overflow: hidden;
-        background: #000;
-        color: var(--text);
+        margin: 0;          /* Remove default browser margins */
+        padding: 0;         /* Remove default browser padding */
+        width: 100%;        /* Full width of the viewport */
+        height: 100%;       /* Full height of the viewport */
+        overflow: hidden;   /* Hide scrollbars - we want a fixed full-screen view */
+        background: #000;   /* Pure black background */
+        color: var(--text); /* Use the white text color variable */
+        /* Font stack: tries Inter first, falls back to system fonts if Inter hasn't loaded */
         font-family: 'Inter', system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, 'Apple Color Emoji', 'Segoe UI Emoji';
       }
-      canvas { display: block; width: 100%; height: 100vh; }
+      
+      /* Canvas element styles */
+      /* The canvas is where Three.js draws all the 3D graphics */
+      canvas { 
+        display: block;     /* Block display removes inline spacing */
+        width: 100%;        /* Full width of the viewport */
+        height: 100vh;      /* Full height of the viewport (vh = viewport height) */
+      }
 
+      /* Animation for animated gradient borders */
+      /* This creates a slowly moving gradient effect for borders and buttons */
+      /* Think of it like a moving rainbow that loops continuously */
       @keyframes gradientBorder {
-        0% { background-position: 0% 50%; }
-        50% { background-position: 100% 50%; }
-        100% { background-position: 0% 50%; }
+        0% { background-position: 0% 50%; }    /* Start: gradient centered on the left */
+        50% { background-position: 100% 50%; }  /* Middle: gradient moves to the right */
+        100% { background-position: 0% 50%; }  /* End: gradient returns to the left (loops) */
       }
 
-      /* Drop overlay */
+      /* Drop overlay - appears when user drags files over the window */
+      /* This gives visual feedback that you can drop an audio file here */
       #drop-overlay {
-        position: fixed; inset: 0; display: none; place-items: center;
-        background: rgba(0,0,0,0.6);
-        color: #fff; z-index: 50; font-size: 24px; font-weight: 700;
-        text-shadow: 0 2px 20px rgba(0,0,0,0.8);
+        position: fixed;      /* Fixed position relative to viewport (stays in place when scrolling) */
+        inset: 0;             /* Shorthand for top:0, right:0, bottom:0, left:0 (full screen) */
+        display: none;         /* Hidden by default, shown when .active class is added */
+        place-items: center;   /* Centers content both horizontally and vertically (CSS Grid) */
+        background: rgba(0,0,0,0.6);  /* Semi-transparent black overlay (60% opacity) */
+        color: #fff;           /* White text */
+        z-index: 50;           /* Layer depth - appears above background but below settings */
+        font-size: 24px;        /* Large, readable text */
+        font-weight: 700;       /* Bold text */
+        text-shadow: 0 2px 20px rgba(0,0,0,0.8);  /* Shadow makes text readable over any background */
       }
+      /* When active, show the overlay using CSS Grid layout */
       #drop-overlay.active { display: grid; }
 
-      /* Helper ribbon */
+      /* Helper ribbon - informational tip at the bottom of the screen */
+      /* Shows helpful hints about system audio on macOS */
       #helper-ribbon {
-        position: fixed; left: 50%; transform: translateX(-50%);
-        bottom: 20px; z-index: 35; pointer-events: none;
+        position: fixed;              /* Fixed position (stays in place) */
+        left: 50%;                    /* Start at 50% from left */
+        transform: translateX(-50%);  /* Shift back by half its width (centers it) */
+        bottom: 20px;                 /* 20 pixels from bottom */
+        z-index: 35;                  /* Layer depth - above background but below UI */
+        pointer-events: none;         /* Don't block clicks (until we enable them on the bubble) */
       }
+      /* The bubble containing the tip text */
       #helper-ribbon .bubble {
-        pointer-events: auto;
-        background: var(--glass-bg);
-        border: 1px solid var(--glass-border);
-        border-radius: 999px;
-        padding: 10px 14px; font-size: 12px; color: #e7e7e7;
-        box-shadow: 0 6px 24px rgba(0,0,0,0.4);
+        pointer-events: auto;         /* Re-enable clicks on the bubble itself */
+        background: var(--glass-bg);  /* Glass background */
+        border: 1px solid var(--glass-border);  /* Subtle border */
+        border-radius: 999px;         /* Fully rounded (pill shape) */
+        padding: 10px 14px;           /* Spacing inside the bubble */
+        font-size: 12px;              /* Small text size */
+        color: #e7e7e7;               /* Light gray text */
+        box-shadow: 0 6px 24px rgba(0,0,0,0.4);  /* Shadow for depth */
       }
+      /* Bold text inside the bubble */
       #helper-ribbon .bubble strong { color: #fff; }
+      /* Link button inside the bubble (for "Learn more" link) */
       #helper-ribbon button.link {
-        appearance: none; border: 0; background: transparent; color: var(--accent);
-        font-weight: 700; cursor: pointer; margin-left: 6px;
+        appearance: none;             /* Remove default button styling */
+        border: 0;                    /* No border */
+        background: transparent;       /* Transparent background */
+        color: var(--accent);         /* Cyan accent color */
+        font-weight: 700;             /* Bold */
+        cursor: pointer;              /* Hand cursor on hover */
+        margin-left: 6px;            /* Small spacing from previous text */
       }
 
-      /* Glass toasts */
+      /* Toast notification - temporary messages that appear briefly */
+      /* Used to show success messages, errors, or helpful hints */
       #toast {
-        position: fixed;
-        left: 50%;
-        bottom: 84px;
-        transform: translateX(-50%);
-        z-index: 70;
-        padding: 10px 14px;
-        border-radius: 12px;
-        border: 1px solid var(--glass-border) !important;
-        background: var(--glass-bg) !important;
-        color: #fff !important;
-        backdrop-filter: blur(10px) !important;
-        -webkit-backdrop-filter: blur(10px) !important;
-        box-shadow: 0 6px 24px rgba(0,0,0,0.4);
-        opacity: 0;
-        transition: opacity 0.25s ease;
-        pointer-events: none;
+        position: fixed;                      /* Fixed position (stays in place) */
+        left: 50%;                            /* Center horizontally */
+        bottom: 84px;                         /* Position above the settings button */
+        transform: translateX(-50%);          /* Center by shifting back half width */
+        z-index: 70;                          /* High layer - appears above most UI */
+        padding: 10px 14px;                   /* Internal spacing */
+        border-radius: 12px;                  /* Rounded corners */
+        border: 1px solid var(--glass-border) !important;  /* Glass border */
+        background: var(--glass-bg) !important;            /* Glass background */
+        color: #fff !important;               /* White text */
+        backdrop-filter: blur(10px) !important;            /* Blur effect behind element */
+        -webkit-backdrop-filter: blur(10px) !important;    /* Safari support */
+        box-shadow: 0 6px 24px rgba(0,0,0,0.4);  /* Shadow for depth */
+        opacity: 0;                           /* Hidden by default */
+        transition: opacity 0.25s ease;       /* Smooth fade in/out animation */
+        pointer-events: none;                 /* Don't block clicks when hidden */
       }
+      /* When visible, fade in */
       #toast.visible { opacity: 1; }
+      /* Animated gradient border effect using ::before pseudo-element */
+      /* This creates a glowing, animated border around the toast */
       #toast::before {
-        content: '';
-        position: absolute;
-        inset: -6px;
-        z-index: -1;
+        content: '';                          /* Required for pseudo-element */
+        position: absolute;                    /* Positioned relative to toast */
+        inset: -6px;                          /* Extends 6px beyond toast edges */
+        z-index: -1;                          /* Behind the toast content */
+        /* Animated gradient with multiple colors */
         background: linear-gradient(45deg, #00ffff, #ff1493, #4169e1, #ff69b4, #00bfff, #00ffff);
-        background-size: 400% 400%;
-        animation: gradientBorder 15s ease infinite;
-        border-radius: 16px;
-        filter: blur(10px);
-        opacity: 0.45;
+        background-size: 400% 400%;           /* Large size for animation */
+        animation: gradientBorder 15s ease infinite;  /* Animated gradient movement */
+        border-radius: 16px;                   /* Slightly larger radius than toast */
+        filter: blur(10px);                    /* Blur creates soft glow effect */
+        opacity: 0.45;                        /* Semi-transparent */
       }
 
 
-      /* New settings trigger button */
+      /* Settings button - button in bottom-right corner that opens the settings panel */
+      /* This is the main way users interact with the app's controls */
       #open-settings-btn {
-        position: fixed; right: 20px; bottom: 20px; z-index: 45;
-        padding: 10px 12px; border-radius: 14px; border: 1px solid var(--glass-border);
-        background: var(--glass-bg); color: #fff; backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
-        box-shadow: 0 8px 32px rgba(0,0,0,0.45);
-        display: inline-flex; align-items: center; gap: 10px; cursor: pointer; font-weight: 700;
+        position: fixed;                       /* Fixed position (stays in place) */
+        right: 20px;                          /* 20 pixels from right edge */
+        bottom: 20px;                         /* 20 pixels from bottom edge */
+        z-index: 45;                          /* Layer depth - above canvas but below drawer */
+        padding: 10px 12px;                   /* Internal spacing */
+        border-radius: 14px;                  /* Rounded corners */
+        border: 1px solid var(--glass-border); /* Glass border */
+        background: var(--glass-bg);          /* Glass background */
+        color: #fff;                          /* White text */
+        backdrop-filter: blur(12px);          /* Blur effect behind button */
+        -webkit-backdrop-filter: blur(12px);  /* Safari support */
+        box-shadow: 0 8px 32px rgba(0,0,0,0.45);  /* Shadow for depth */
+        display: inline-flex;                  /* Flexbox for icon + text alignment */
+        align-items: center;                  /* Vertical centering */
+        gap: 10px;                            /* Space between icon and text */
+        cursor: pointer;                      /* Hand cursor on hover */
+        font-weight: 700;                     /* Bold text */
       }
+      /* Animated gradient border glow effect */
       #open-settings-btn::before {
-        content: '';
-        position: absolute; inset: -6px; z-index: -1;
+        content: '';                          /* Required for pseudo-element */
+        position: absolute;                   /* Positioned relative to button */
+        inset: -6px;                         /* Extends beyond button edges */
+        z-index: -1;                         /* Behind button content */
+        /* Same animated gradient as toast */
         background: linear-gradient(45deg, #00ffff, #ff1493, #4169e1, #ff69b4, #00bfff, #00ffff);
-        background-size: 400% 400%; animation: gradientBorder 15s ease infinite; border-radius: 18px; filter: blur(10px); opacity: 0.55;
+        background-size: 400% 400%;          /* Large size for animation */
+        animation: gradientBorder 15s ease infinite;  /* Animated movement */
+        border-radius: 18px;                  /* Slightly larger radius */
+        filter: blur(10px);                   /* Soft glow effect */
+        opacity: 0.55;                        /* More visible than toast border */
       }
 
-      /* New settings drawer */
-      #settings-root { position: fixed; inset: 0; display: none; z-index: 60; }
-      #settings-overlay { position: absolute; inset: 0; background: rgba(0,0,0,0.45); }
+      /* Settings drawer - the sliding panel that contains all controls */
+      /* This is like a drawer that slides in from the right side of the screen */
+      
+      /* Root container - covers entire screen when open */
+      #settings-root { 
+        position: fixed;                      /* Fixed position (overlays everything) */
+        inset: 0;                             /* Full screen */
+        display: none;                        /* Hidden by default */
+        z-index: 60;                          /* Very high layer - above everything */
+      }
+      /* Dark overlay behind the drawer - dims the background when drawer is open */
+      #settings-overlay { 
+        position: absolute;                   /* Positioned relative to settings-root */
+        inset: 0;                             /* Full screen */
+        background: rgba(0,0,0,0.45);         /* Semi-transparent black (45% opacity) */
+      }
+      /* The actual drawer panel - slides in from the right */
       #settings-drawer {
-        position: absolute; top: 0; right: 0; width: min(420px, 92vw); height: 100%;
-        background: var(--glass-bg); border-left: 1px solid var(--glass-border);
-        backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
-        box-shadow: -8px 0 32px rgba(0,0,0,0.45); transform: translateX(100%);
-        transition: transform 260ms ease;
-        display: grid; grid-template-rows: auto 1fr auto;
+        position: absolute;                   /* Positioned relative to settings-root */
+        top: 0;                              /* Align to top */
+        right: 0;                            /* Align to right edge */
+        width: min(420px, 92vw);             /* 420px wide, or 92% of viewport width (whichever is smaller) */
+        height: 100%;                        /* Full height */
+        background: var(--glass-bg);         /* Glass background */
+        border-left: 1px solid var(--glass-border);  /* Left border (visible when drawer is open) */
+        backdrop-filter: blur(14px);         /* Strong blur effect */
+        -webkit-backdrop-filter: blur(14px); /* Safari support */
+        box-shadow: -8px 0 32px rgba(0,0,0,0.45);  /* Shadow on left edge */
+        transform: translateX(100%);         /* Start off-screen to the right (hidden) */
+        transition: transform 260ms ease;    /* Smooth slide animation */
+        display: grid;                       /* CSS Grid layout */
+        grid-template-rows: auto 1fr auto;   /* Header (auto), content (flexible), footer (auto) */
       }
+      /* When settings-root has .open class, slide drawer into view */
       #settings-root.open #settings-drawer { transform: translateX(0); }
+      /* Settings header - top section with title and close button */
       #settings-header { 
-        padding: 12px; border-bottom: 1px solid var(--glass-border); 
-        display: flex; align-items: center; justify-content: space-between;
-        font-size: 16px; font-weight: 700; color: #fff;
+        padding: 12px;                        /* Internal spacing */
+        border-bottom: 1px solid var(--glass-border);  /* Bottom border separator */
+        display: flex;                        /* Flexbox for horizontal layout */
+        align-items: center;                  /* Vertical centering */
+        justify-content: space-between;       /* Title on left, button on right */
+        font-size: 16px;                      /* Medium text size */
+        font-weight: 700;                     /* Bold text */
+        color: #fff;                          /* White text */
       }
+      /* Close button in header */
       #settings-header button {
-        padding: 4px 8px; border-radius: 6px; border: 1px solid var(--glass-border);
-        background: rgba(255,255,255,0.1); color: #fff; font-size: 18px;
-        cursor: pointer; transition: all 0.2s ease; outline: none; line-height: 1;
+        padding: 4px 8px;                     /* Small padding */
+        border-radius: 6px;                   /* Slightly rounded */
+        border: 1px solid var(--glass-border); /* Glass border */
+        background: rgba(255,255,255,0.1);   /* Light background */
+        color: #fff;                          /* White text */
+        font-size: 18px;                      /* Large × symbol */
+        cursor: pointer;                      /* Hand cursor */
+        transition: all 0.2s ease;           /* Smooth hover effects */
+        outline: none;                        /* Remove browser focus outline */
+        line-height: 1;                       /* Tight line spacing */
       }
+      /* Hover effect: brighter background and slight scale up */
       #settings-header button:hover {
-        background: rgba(255,255,255,0.2); transform: scale(1.1);
+        background: rgba(255,255,255,0.2);    /* Brighter on hover */
+        transform: scale(1.1);                /* Slightly larger */
       }
-      #settings-content { overflow: auto; padding: 12px; }
-      #settings-footer { padding: 12px; border-top: 1px solid var(--glass-border); display: flex; gap: 8px; justify-content: flex-end; }
+      
+      /* Settings content area - scrollable area containing all the controls */
+      #settings-content { 
+        overflow: auto;                       /* Enable scrolling if content is too tall */
+        padding: 12px;                        /* Internal spacing */
+      }
+      
+      /* Settings footer - bottom section with action buttons */
+      #settings-footer { 
+        padding: 12px;                        /* Internal spacing */
+        border-top: 1px solid var(--glass-border);  /* Top border separator */
+        display: flex;                        /* Flexbox for horizontal layout */
+        gap: 8px;                            /* Space between buttons */
+        justify-content: flex-end;            /* Buttons aligned to right */
+      }
+      /* Footer buttons (Reset, Save Settings, etc.) */
       #settings-footer button {
-        padding: 8px 16px; border-radius: 8px; border: 1px solid var(--glass-border);
-        background: rgba(255,255,255,0.1); color: #fff; font-size: 12px; font-weight: 600;
-        cursor: pointer; transition: all 0.2s ease; outline: none;
+        padding: 8px 16px;                    /* Comfortable padding */
+        border-radius: 8px;                   /* Rounded corners */
+        border: 1px solid var(--glass-border); /* Glass border */
+        background: rgba(255,255,255,0.1);    /* Light background */
+        color: #fff;                          /* White text */
+        font-size: 12px;                      /* Small text */
+        font-weight: 600;                     /* Semi-bold */
+        cursor: pointer;                      /* Hand cursor */
+        transition: all 0.2s ease;           /* Smooth hover effects */
+        outline: none;                        /* Remove browser focus outline */
       }
+      /* Hover effect: brighter background and cyan border */
       #settings-footer button:hover {
-        background: rgba(255,255,255,0.2); border-color: #00ffff;
+        background: rgba(255,255,255,0.2);    /* Brighter on hover */
+        border-color: #00ffff;                /* Cyan border highlight */
       }
 
-      /* Settings tabs */
+      /* Settings tabs - horizontal row of buttons for switching between setting categories */
+      /* Categories include: Quick, Source, Audio, Visuals, Shader, Mapping, Tempo, Presets, Session */
       #settings-tabs {
-        display: flex; align-items: center; gap: 8px; padding: 8px 12px;
-        border-bottom: 1px solid var(--glass-border); overflow-x: auto;
-        min-height: 36px; /* ensure visible row height across browsers */
+        display: flex;                        /* Flexbox for horizontal layout */
+        align-items: center;                  /* Vertical centering */
+        gap: 8px;                             /* Space between tabs */
+        padding: 8px 12px;                    /* Internal spacing */
+        border-bottom: 1px solid var(--glass-border);  /* Bottom border separator */
+        overflow-x: auto;                     /* Horizontal scrolling if tabs overflow */
+        min-height: 36px;                     /* Ensure visible row height across browsers */
       }
+      /* Individual tab button */
       #settings-tabs .tab {
-        appearance: none; -webkit-appearance: none; display: inline-block;
-        padding: 6px 12px; border-radius: 999px; border: 1px solid transparent; background: transparent;
-        color: rgba(255,255,255,0.85); cursor: pointer; font-size: 12px; font-weight: 700;
-        transition: all 0.2s ease; white-space: nowrap;
+        appearance: none;                     /* Remove default button styling */
+        -webkit-appearance: none;             /* Safari support */
+        display: inline-block;                 /* Inline block for sizing */
+        padding: 6px 12px;                    /* Comfortable padding */
+        border-radius: 999px;                  /* Fully rounded (pill shape) */
+        border: 1px solid transparent;         /* Transparent border (visible when active) */
+        background: transparent;              /* Transparent background */
+        color: rgba(255,255,255,0.85);        /* Semi-transparent white text */
+        cursor: pointer;                      /* Hand cursor */
+        font-size: 12px;                      /* Small text */
+        font-weight: 700;                     /* Bold */
+        transition: all 0.2s ease;            /* Smooth hover/active transitions */
+        white-space: nowrap;                  /* Prevent text wrapping */
       }
-      #settings-tabs .tab:hover { background: rgba(255,255,255,0.1); color: #fff; }
-      #settings-tabs .tab.active { background: rgba(255,255,255,0.15); color: #fff; border-color: var(--glass-border); }
+      /* Hover effect: slightly brighter background and text */
+      #settings-tabs .tab:hover { 
+        background: rgba(255,255,255,0.1);    /* Light background */
+        color: #fff;                          /* Fully opaque white */
+      }
+      /* Active tab: brighter background and visible border */
+      #settings-tabs .tab.active { 
+        background: rgba(255,255,255,0.15);   /* More visible background */
+        color: #fff;                          /* Fully opaque white */
+        border-color: var(--glass-border);    /* Visible border */
+      }
 
-      /* Settings content sections */
-      #settings-content .section { margin-bottom: 20px; }
+      /* Settings content sections - groups of related controls */
+      /* Each section has a title and contains multiple control rows */
+      #settings-content .section { 
+        margin-bottom: 20px;                   /* Space between sections */
+      }
+      /* Section title (e.g., "Audio", "Visuals", "Mapping") */
       #settings-content .section-title { 
-        font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 12px; 
-        padding-bottom: 6px; border-bottom: 1px solid rgba(255,255,255,0.1);
+        font-size: 14px;                       /* Medium text size */
+        font-weight: 700;                     /* Bold */
+        color: #fff;                          /* White text */
+        margin-bottom: 12px;                  /* Space below title */
+        padding-bottom: 6px;                  /* Padding above border */
+        border-bottom: 1px solid rgba(255,255,255,0.1);  /* Subtle underline */
       }
+      /* Control row - contains a label and control (slider, checkbox, etc.) */
       #settings-content .row { 
-        display: flex; align-items: center; justify-content: space-between; 
-        margin-bottom: 8px; padding: 4px 0;
+        display: flex;                        /* Flexbox for horizontal layout */
+        align-items: center;                  /* Vertical centering */
+        justify-content: space-between;       /* Label on left, control on right */
+        margin-bottom: 8px;                   /* Space between rows */
+        padding: 4px 0;                       /* Small vertical padding */
       }
+      /* Label text (e.g., "Gain", "Smoothing", "Theme") */
       #settings-content .label { 
-        font-size: 12px; color: rgba(255,255,255,0.9); font-weight: 500; 
-        min-width: 120px; margin-right: 12px;
+        font-size: 12px;                      /* Small text */
+        color: rgba(255,255,255,0.9);         /* Nearly opaque white */
+        font-weight: 500;                     /* Medium weight */
+        min-width: 120px;                     /* Minimum width for alignment */
+        margin-right: 12px;                   /* Space before control */
       }
+      /* Control wrapper - contains the actual input/select/button */
       #settings-content .control { 
-        flex: 1; display: flex; align-items: center; gap: 8px;
+        flex: 1;                              /* Takes remaining space */
+        display: flex;                        /* Flexbox for multiple controls */
+        align-items: center;                  /* Vertical centering */
+        gap: 8px;                            /* Space between multiple controls */
       }
 
+      /* Range slider input styling */
+      /* These are the sliders you drag to adjust numeric values */
       #settings-content input[type="range"] {
-        flex: 1; height: 4px; background: rgba(255,255,255,0.2); border-radius: 2px;
-        outline: none; cursor: pointer;
+        flex: 1;                              /* Takes available space */
+        height: 4px;                          /* Thin track */
+        background: rgba(255,255,255,0.2);    /* Semi-transparent white track */
+        border-radius: 2px;                   /* Slightly rounded */
+        outline: none;                        /* Remove browser focus outline */
+        cursor: pointer;                      /* Hand cursor */
       }
+      /* Chrome/Safari slider thumb (the draggable circle) */
       #settings-content input[type="range"]::-webkit-slider-thumb {
-        appearance: none; width: 16px; height: 16px; border-radius: 50%;
-        background: #fff; cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+        appearance: none;                     /* Remove default styling */
+        width: 16px;                          /* 16px circle */
+        height: 16px;                         /* Square (becomes circle with border-radius) */
+        border-radius: 50%;                  /* Fully rounded (circle) */
+        background: #fff;                     /* White thumb */
+        cursor: pointer;                      /* Hand cursor */
+        box-shadow: 0 2px 6px rgba(0,0,0,0.3);  /* Shadow for depth */
       }
+      /* Firefox slider thumb */
       #settings-content input[type="range"]::-moz-range-thumb {
-        width: 16px; height: 16px; border-radius: 50%; background: #fff; cursor: pointer;
-        border: none; box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+        width: 16px;                          /* Same size as Chrome */
+        height: 16px;                         /* Square */
+        border-radius: 50%;                  /* Circle */
+        background: #fff;                     /* White thumb */
+        cursor: pointer;                      /* Hand cursor */
+        border: none;                         /* Remove default border */
+        box-shadow: 0 2px 6px rgba(0,0,0,0.3);  /* Shadow for depth */
       }
 
+      /* Dropdown select styling */
+      /* These are the dropdown menus for selecting options */
       #settings-content select {
-        padding: 4px 8px; border-radius: 6px; border: 1px solid var(--glass-border);
-        background: rgba(255,255,255,0.1); color: #fff; font-size: 12px;
-        outline: none; cursor: pointer;
+        padding: 4px 8px;                     /* Internal spacing */
+        border-radius: 6px;                   /* Rounded corners */
+        border: 1px solid var(--glass-border); /* Glass border */
+        background: rgba(255,255,255,0.1);    /* Light background */
+        color: #fff;                          /* White text */
+        font-size: 12px;                      /* Small text */
+        outline: none;                        /* Remove browser focus outline */
+        cursor: pointer;                      /* Hand cursor */
       }
-      #settings-content select:focus { border-color: #00ffff; box-shadow: 0 0 8px rgba(0,255,255,0.3); }
+      /* When dropdown is focused (clicked or tabbed to), highlight with cyan */
+      #settings-content select:focus { 
+        border-color: #00ffff;                /* Cyan border */
+        box-shadow: 0 0 8px rgba(0,255,255,0.3);  /* Cyan glow */
+      }
 
+      /* Checkbox styling */
+      /* These are the on/off toggle switches */
       #settings-content input[type="checkbox"] {
-        width: 16px; height: 16px; border-radius: 4px; border: 1px solid var(--glass-border);
-        background: rgba(255,255,255,0.1); cursor: pointer; appearance: none;
-        position: relative; transition: all 0.2s ease;
+        width: 16px;                         /* Small square */
+        height: 16px;                         /* Same as width (square) */
+        border-radius: 4px;                  /* Slightly rounded corners */
+        border: 1px solid var(--glass-border); /* Glass border */
+        background: rgba(255,255,255,0.1);    /* Light background (unchecked) */
+        cursor: pointer;                      /* Hand cursor */
+        appearance: none;                    /* Remove default browser styling */
+        position: relative;                   /* For positioning the checkmark */
+        transition: all 0.2s ease;           /* Smooth color changes */
       }
+      /* When checked, turn cyan */
       #settings-content input[type="checkbox"]:checked {
-        background: #00ffff; border-color: #00ffff;
+        background: #00ffff;                  /* Cyan background */
+        border-color: #00ffff;                /* Cyan border */
       }
+      /* Show checkmark (✓) when checked */
       #settings-content input[type="checkbox"]:checked::after {
-        content: '✓'; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-        color: #000; font-size: 10px; font-weight: bold;
+        content: '✓';                         /* Checkmark character */
+        position: absolute;                   /* Positioned relative to checkbox */
+        top: 50%;                             /* Center vertically */
+        left: 50%;                            /* Center horizontally */
+        transform: translate(-50%, -50%);    /* Perfect centering */
+        color: #000;                          /* Black text (visible on cyan) */
+        font-size: 10px;                      /* Small checkmark */
+        font-weight: bold;                    /* Bold */
       }
 
+      /* Button styling (used for action buttons in settings) */
       #settings-content button {
-        padding: 6px 12px; border-radius: 6px; border: 1px solid var(--glass-border);
-        background: rgba(255,255,255,0.1); color: #fff; font-size: 11px; font-weight: 600;
-        cursor: pointer; transition: all 0.2s ease; outline: none;
+        padding: 6px 12px;                   /* Comfortable padding */
+        border-radius: 6px;                   /* Rounded corners */
+        border: 1px solid var(--glass-border); /* Glass border */
+        background: rgba(255,255,255,0.1);    /* Light background */
+        color: #fff;                          /* White text */
+        font-size: 11px;                      /* Small text */
+        font-weight: 600;                     /* Semi-bold */
+        cursor: pointer;                      /* Hand cursor */
+        transition: all 0.2s ease;           /* Smooth hover effects */
+        outline: none;                        /* Remove browser focus outline */
       }
+      /* Hover effect: brighter background and cyan border glow */
       #settings-content button:hover {
-        background: rgba(255,255,255,0.2); border-color: #00ffff;
-        box-shadow: 0 0 8px rgba(0,255,255,0.2);
+        background: rgba(255,255,255,0.2);    /* Brighter background */
+        border-color: #00ffff;                /* Cyan border */
+        box-shadow: 0 0 8px rgba(0,255,255,0.2);  /* Cyan glow */
       }
+      /* Click effect: slight downward movement */
       #settings-content button:active { transform: translateY(1px); }
 
+      /* Special labels that display values (FPS, BPM, etc.) */
+      /* These are highlighted in cyan to stand out */
       #settings-content #fps-label, #settings-content #auto-bpm, #settings-content #tap-bpm {
-        color: #00ffff; font-weight: 700; font-size: 12px;
+        color: #00ffff;                        /* Cyan color */
+        font-weight: 700;                     /* Bold */
+        font-size: 12px;                      /* Small text */
       }
+      /* Beat indicator dot in settings header */
+      /* Small pulsing dot that lights up when a beat is detected */
+      #beat-indicator { 
+        width: 8px;                           /* Small dot */
+        height: 8px;                          /* Square (becomes circle with border-radius) */
+        border-radius: 50%;                   /* Fully rounded (circle) */
+        background: #3a3a3a;                  /* Dark gray (inactive) */
+        display: inline-block;                /* Inline with text */
+        margin-right: 8px;                    /* Space before "Settings" text */
+        box-shadow: 0 0 8px rgba(0,0,0,0.6);  /* Subtle shadow */
+        transition: background 50ms linear;   /* Fast color change on beat */
+      }
+      /* When a beat is detected, the dot turns cyan */
+      #beat-indicator.on { background: #00ffff; }
     </style>
   </head>
   <body>
-    
+    <!--
+      Body Section
+      ============
+      
+      This is where all the visible UI elements are placed.
+      The main canvas (for 3D graphics) is created by JavaScript in scene.js,
+      but we also need HTML elements for the settings panel and various buttons.
+    -->
 
-    <button id="open-settings-btn" aria-haspopup="dialog" aria-expanded="false">⚙️ Settings</button>
+    <!-- Settings button - opens the settings drawer when clicked -->
+    <!-- aria-haspopup and aria-expanded are accessibility attributes for screen readers -->
+    <button id="open-settings-btn" type="button" aria-haspopup="dialog" aria-expanded="false">
+      <span aria-hidden="true">⚙️</span>
+      Settings
+    </button>
 
+    <!-- Settings drawer - the sliding panel containing all controls -->
+    <!-- role="dialog" and aria-modal tell screen readers this is a modal dialog -->
     <div id="settings-root" role="dialog" aria-modal="true" aria-label="Settings Drawer">
+      <!-- Dark overlay that dims the background when drawer is open -->
+      <!-- Clicking this closes the drawer -->
       <div id="settings-overlay"></div>
+      
+      <!-- The actual drawer panel that slides in from the right -->
       <div id="settings-drawer">
+        <!-- Header section with title and close button -->
         <div id="settings-header">
-          <div>Settings</div>
+          <div>
+            <!-- Beat indicator: small pulsing dot that lights up on beats -->
+            <span id="beat-indicator"></span>
+            Settings
+          </div>
+          <!-- Close button (× symbol) -->
           <button id="settings-close">✕</button>
         </div>
+        
+        <!-- Tab navigation - switches between different setting categories -->
+        <!-- Populated dynamically by JavaScript in settings-ui.js -->
         <div id="settings-tabs"></div>
+        
+        <!-- Content area - contains all the actual controls (sliders, checkboxes, etc.) -->
+        <!-- Populated dynamically by JavaScript based on selected tab -->
         <div id="settings-content"></div>
+        
+        <!-- Footer with action buttons -->
         <div id="settings-footer">
+          <!-- Reset: reloads the page to restore defaults -->
           <button id="settings-reset">Reset</button>
+          <!-- Save Settings: saves current configuration to browser storage -->
           <button id="settings-save-settings">Save Settings</button>
+          <!-- Save Preset: saves current configuration as a named preset -->
           <button id="settings-save-preset">Save Preset</button>
+          <!-- Close: closes the settings drawer -->
           <button id="settings-close-footer">Close</button>
         </div>
       </div>
     </div>
 
+    <!-- Drop overlay - appears when user drags files over the window -->
+    <!-- Provides visual feedback that files can be dropped here -->
     <div id="drop-overlay">Drop an audio file to visualize</div>
 
-    
-
     <!-- iOS/Safari unlock: one-time Start Audio button (hidden after click) -->
+    <!-- 
+      Safari/iOS requires a user gesture (click) before audio can play.
+      This button appears on those browsers and disappears after first click.
+      The inline styles ensure it's visible even if CSS hasn't loaded yet.
+    -->
     <button id="start-audio-btn" style="position:fixed; inset:auto 20px 20px auto; z-index:60; padding:10px 12px; border-radius:12px; border:1px solid var(--glass-border); background: var(--glass-bg); color:#fff; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); display:none;">Start Audio</button>
 
-    <!-- Import map shim for older Safari/Firefox -->
-    <script async src="https://ga.jspm.io/npm:es-module-shims@1.10.0/dist/es-module-shims.js"></script>
+    <!-- Helper ribbon - informational tip at bottom of screen -->
+    <!-- Shows helpful hints about system audio on macOS -->
+    <div id="helper-ribbon">
+      <div class="bubble">
+        Tip: For system audio on macOS, use Chrome and share tab audio.
+        <button id="open-system-audio-help" class="link">Learn more</button>
+      </div>
+    </div>
 
-    <!-- three.js import map -->
-    <script type="importmap">
-      {
-        "imports": {
-          "three": "https://cdn.jsdelivr.net/npm/three@0.162.0/build/three.module.js",
-          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.162.0/examples/jsm/",
-          "postprocessing": "https://esm.sh/postprocessing@6.36.3?external=three",
-          "camera-controls": "https://esm.sh/camera-controls@2.7.4?external=three",
-          "standardized-audio-context": "https://esm.sh/standardized-audio-context@14.0.2",
-          "aubiojs": "https://esm.sh/aubiojs@0.0.11",
-          "meyda": "https://esm.sh/meyda@5.6.3"
-        }
-      }
-    </script>
-
-    <!-- App entry -->
+    <!-- 
+      Application Entry Point
+      ========================
+      
+      This script tag loads and starts the main JavaScript application.
+      It's marked as type="module" which means it uses ES6 modules (import/export).
+      
+      The script does two things:
+      1. Imports and runs main.js (the main application code)
+      2. Sets up iOS/Safari audio unlock button (if needed)
+    -->
     <script type="module">
+      // Import and run the main application
+      // This starts everything: audio engine, 3D scene, settings UI, etc.
       import './src/main.js';
-      // Show unlock button on iOS/Safari until first user gesture resumes audio
+      
+      // iOS/Safari Audio Unlock Setup
+      // ==============================
+      // Safari and iOS have strict audio policies - audio can't play until the user
+      // interacts with the page (clicks something). This code detects those browsers
+      // and shows a "Start Audio" button that unlocks audio playback.
+      
+      // Detect if we're on Safari (but not Chrome on iOS, which identifies as Chrome)
       const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
-      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+      
+      // Detect if we're on iOS (iPhone, iPad, or iPad-like Mac)
+      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || 
+                    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+      
+      // Get the unlock button element
       const btn = document.getElementById('start-audio-btn');
+      
+      // If we're on Safari or iOS, show the unlock button
       if (isSafari || isIOS) {
-        btn.style.display = 'block';
+        btn.style.display = 'block';  // Make it visible
+        
+        // When clicked, unlock all audio contexts and hide the button
         btn.addEventListener('click', async () => {
           try {
+            // Get all audio contexts that were created (stored in a global array)
             const anyCtx = window.__reactiveCtxs || [];
-            for (const c of anyCtx) { await c.resume?.(); }
-          } catch(_) {}
+            
+            // Resume each audio context (this unlocks audio playback)
+            // The ?. is optional chaining - if resume doesn't exist, it just skips
+            for (const c of anyCtx) { 
+              await c.resume?.(); 
+            }
+          } catch(_) {
+            // If something fails, continue anyway (don't break the app)
+          }
+          
+          // Hide the button after unlocking (we don't need it anymore)
           btn.style.display = 'none';
         });
       }
