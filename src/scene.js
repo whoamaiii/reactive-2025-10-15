@@ -1927,6 +1927,191 @@ export function initScene() {
 
   changeTheme('nebula');
 
+  /**
+   * Dispose and cleanup all scene resources.
+   *
+   * This method properly cleans up all Three.js resources to prevent memory leaks:
+   * - Disposes all geometries, materials, and textures
+   * - Disposes renderer, composer, and effects
+   * - Removes canvas from DOM
+   * - Disposes camera controls
+   * - Clears all object references
+   *
+   * Call this when the application is shutting down.
+   */
+  function dispose() {
+    // Dispose particles and their geometries/materials
+    if (state.coreSphere) {
+      try {
+        state.coreSphere.geometry.dispose();
+        state.coreSphere.material.dispose();
+      } catch (_) {}
+      state.coreSphere = null;
+    }
+
+    if (state.outerSphere) {
+      try {
+        state.outerSphere.geometry.dispose();
+        state.outerSphere.material.dispose();
+      } catch (_) {}
+      state.outerSphere = null;
+    }
+
+    if (state.orbitRings) {
+      try {
+        state.orbitRings.children.forEach(ring => {
+          if (ring.geometry) ring.geometry.dispose();
+          if (ring.material) ring.material.dispose();
+        });
+      } catch (_) {}
+      state.orbitRings = null;
+    }
+
+    if (state.starfield) {
+      try {
+        state.starfield.geometry.dispose();
+        state.starfield.material.dispose();
+      } catch (_) {}
+      state.starfield = null;
+    }
+
+    if (state.sparks) {
+      try {
+        state.sparks.geometry.dispose();
+        state.sparks.material.dispose();
+      } catch (_) {}
+      state.sparks = null;
+    }
+
+    // Dispose shockwave
+    if (state.shockwave?.mesh) {
+      try {
+        if (state.shockwave.mesh.geometry) state.shockwave.mesh.geometry.dispose();
+        if (state.shockwave.mesh.material) state.shockwave.mesh.material.dispose();
+      } catch (_) {}
+      state.shockwave.mesh = null;
+      state.shockwave.material = null;
+    }
+
+    // Dispose eye components
+    if (state.eye?.mesh) {
+      try {
+        if (state.eye.mesh.geometry) state.eye.mesh.geometry.dispose();
+        if (state.eye.mesh.material) state.eye.mesh.material.dispose();
+      } catch (_) {}
+      state.eye.mesh = null;
+    }
+
+    if (state.eye?.cornea) {
+      try {
+        if (state.eye.cornea.geometry) state.eye.cornea.geometry.dispose();
+        if (state.eye.cornea.material) state.eye.cornea.material.dispose();
+      } catch (_) {}
+      state.eye.cornea = null;
+    }
+
+    // Dispose HDR texture
+    if (state.currentHdrTexture) {
+      try {
+        state.currentHdrTexture.dispose();
+      } catch (_) {}
+      state.currentHdrTexture = null;
+    }
+
+    // Dispose dispersion layer
+    if (state.dispersion?.layer) {
+      try {
+        if (typeof state.dispersion.layer.dispose === 'function') {
+          state.dispersion.layer.dispose();
+        }
+      } catch (_) {}
+      state.dispersion.layer = null;
+    }
+
+    // Dispose lights
+    state.centralLight = null;
+    state.centralGlow = null;
+
+    // Dispose post-processing effects
+    if (state.bloomEffect) {
+      try {
+        state.bloomEffect.dispose();
+      } catch (_) {}
+      state.bloomEffect = null;
+    }
+
+    if (state.chromaticEffect) {
+      try {
+        state.chromaticEffect.dispose();
+      } catch (_) {}
+      state.chromaticEffect = null;
+    }
+
+    if (state.effectPass) {
+      try {
+        state.effectPass.dispose();
+      } catch (_) {}
+      state.effectPass = null;
+    }
+
+    if (state.renderPass) {
+      try {
+        state.renderPass.dispose();
+      } catch (_) {}
+      state.renderPass = null;
+    }
+
+    // Dispose composer
+    if (state.composer) {
+      try {
+        state.composer.dispose();
+      } catch (_) {}
+      state.composer = null;
+    }
+
+    // Dispose camera controls
+    if (state.controls) {
+      try {
+        state.controls.dispose();
+      } catch (_) {}
+      state.controls = null;
+    }
+
+    // Clear scene
+    if (state.scene) {
+      try {
+        state.scene.traverse((obj) => {
+          if (obj.geometry) obj.geometry.dispose();
+          if (obj.material) {
+            if (Array.isArray(obj.material)) {
+              obj.material.forEach(mat => mat.dispose());
+            } else {
+              obj.material.dispose();
+            }
+          }
+        });
+        state.scene.clear();
+      } catch (_) {}
+      state.scene = null;
+    }
+
+    // Remove canvas from DOM and dispose renderer
+    if (state.renderer) {
+      try {
+        if (state.renderer.domElement && state.renderer.domElement.parentNode) {
+          state.renderer.domElement.parentNode.removeChild(state.renderer.domElement);
+        }
+        state.renderer.dispose();
+      } catch (_) {}
+      state.renderer = null;
+    }
+
+    // Clear references
+    state.camera = null;
+    state.mainGroup = null;
+    state._perfDeltasProvider = null;
+  }
+
   return {
     state,
     changeTheme,
@@ -1949,5 +2134,6 @@ export function initScene() {
     setUniformDeltasProvider: (fn) => { state._perfDeltasProvider = typeof fn === 'function' ? fn : null; },
     setVisualMode: (mode) => { try { setupVisualMode(mode); } catch(_) {} },
     getPixelRatio: () => state.renderer.getPixelRatio(),
+    dispose,
   };
 }

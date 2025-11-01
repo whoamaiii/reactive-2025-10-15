@@ -289,7 +289,8 @@ export class PerformanceController {
       return ['input', 'textarea', 'select', 'button'].includes(tag) || ev.isComposing;
     };
 
-    window.addEventListener('keydown', (ev) => {
+    // Store event handler references for later cleanup
+    this._keydownHandler = (ev) => {
       if (ev.defaultPrevented) return;
       if (ev.repeat) return;
       if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
@@ -363,9 +364,9 @@ export class PerformanceController {
         if (this.pad1.isDown) this.pad1.gain = clamp(this.pad1.gain - 0.08, 0.2, 2.0);
         if (this.pad3.isDown) this.pad3.gain = clamp(this.pad3.gain - 0.08, 0.2, 2.0);
       }
-    });
+    };
 
-    window.addEventListener('keyup', (ev) => {
+    this._keyupHandler = (ev) => {
       if (ev.defaultPrevented) return;
       const k = (ev.key || '').toLowerCase();
       this._lastShiftHeld = !!ev.shiftKey;
@@ -390,21 +391,27 @@ export class PerformanceController {
         this.pad5.isDown = false;
         this._broadcast({ key: '5', action: 'release', t: this.nowMs });
       }
-    });
+    };
 
     // Global wheel → live intensity adjust for the last held pad (1 or 3)
-    window.addEventListener('wheel', (ev) => {
+    this._wheelHandler = (ev) => {
       if (!this.enabled) return;
       const delta = clamp(ev.deltaY, -200, 200) / 600; // gentle
       if (this.pad1.isDown) this.pad1.gain = clamp(this.pad1.gain - delta, 0.2, 2.0);
       if (this.pad3.isDown) this.pad3.gain = clamp(this.pad3.gain - delta, 0.2, 2.0);
-    }, { passive: true });
+    };
 
-    // Safety: on blur/visibility change, stop momentary presses
-    window.addEventListener('blur', () => this.panic());
-    document.addEventListener('visibilitychange', () => {
+    this._blurHandler = () => this.panic();
+    this._visibilityHandler = () => {
       if (document.visibilityState !== 'visible') this.panic();
-    });
+    };
+
+    // Register all event listeners
+    window.addEventListener('keydown', this._keydownHandler);
+    window.addEventListener('keyup', this._keyupHandler);
+    window.addEventListener('wheel', this._wheelHandler, { passive: true });
+    window.addEventListener('blur', this._blurHandler);
+    document.addEventListener('visibilitychange', this._visibilityHandler);
   }
 
   _handleRemotePadEvent(evt) {
@@ -468,6 +475,54 @@ export class PerformanceController {
     } catch (_) {
       // HUD is optional; continue silently if DOM is unavailable
     }
+  }
+
+  /**
+   * Dispose and cleanup all performance controller resources.
+   *
+   * This method properly cleans up the PerformanceController to prevent memory leaks:
+   * - Removes all keyboard and window event listeners
+   * - Removes HUD element from DOM
+   * - Clears all references
+   *
+   * Call this when the application is shutting down.
+   */
+  dispose() {
+    // Remove all event listeners
+    if (this._keydownHandler) {
+      window.removeEventListener('keydown', this._keydownHandler);
+      this._keydownHandler = null;
+    }
+    if (this._keyupHandler) {
+      window.removeEventListener('keyup', this._keyupHandler);
+      this._keyupHandler = null;
+    }
+    if (this._wheelHandler) {
+      window.removeEventListener('wheel', this._wheelHandler);
+      this._wheelHandler = null;
+    }
+    if (this._blurHandler) {
+      window.removeEventListener('blur', this._blurHandler);
+      this._blurHandler = null;
+    }
+    if (this._visibilityHandler) {
+      document.removeEventListener('visibilitychange', this._visibilityHandler);
+      this._visibilityHandler = null;
+    }
+
+    // Remove HUD element from DOM
+    if (this._hud && this._hud.parentNode) {
+      try {
+        this._hud.parentNode.removeChild(this._hud);
+      } catch (_) {}
+    }
+    this._hud = null;
+    this._hudPad1 = null;
+    this._hudModeText = null;
+
+    // Clear references
+    this.sceneApi = null;
+    this.sync = null;
   }
 }
 

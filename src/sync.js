@@ -231,6 +231,20 @@ export class SyncCoordinator {
   }
 
   _initTransports() {
+    // Store event handler references for later cleanup
+    this._messageHandler = (event) => {
+      this._handleMessage(event?.data, 'postMessage', event.source || null);
+    };
+    this._storageHandler = (event) => {
+      if (event.key !== STORAGE_KEY || !event.newValue) return;
+      try {
+        const parsed = JSON.parse(event.newValue);
+        this._handleMessage(parsed, 'storage');
+      } catch (_) {
+        // ignore
+      }
+    };
+
     if (typeof BroadcastChannel === 'function') {
       try {
         this.channel = new BroadcastChannel(CHANNEL_NAME);
@@ -241,18 +255,8 @@ export class SyncCoordinator {
       }
     }
     if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
-      window.addEventListener('message', (event) => {
-        this._handleMessage(event?.data, 'postMessage', event.source || null);
-      });
-      window.addEventListener('storage', (event) => {
-        if (event.key !== STORAGE_KEY || !event.newValue) return;
-        try {
-          const parsed = JSON.parse(event.newValue);
-          this._handleMessage(parsed, 'storage');
-        } catch (_) {
-          // ignore
-        }
-      });
+      window.addEventListener('message', this._messageHandler);
+      window.addEventListener('storage', this._storageHandler);
     }
     if (this.role === 'receiver' && typeof window !== 'undefined') {
       if (window.opener && !window.opener.closed) this.controlWindow = window.opener;
@@ -530,5 +534,61 @@ export class SyncCoordinator {
     if (!event) return;
     const target = this.role === 'control' ? 'receiver' : 'control';
     this._sendMessage('padEvent', { event }, { target });
+  }
+
+  /**
+   * Dispose and cleanup all sync resources.
+   *
+   * This method properly cleans up the SyncCoordinator to prevent memory leaks:
+   * - Closes BroadcastChannel
+   * - Removes window event listeners
+   * - Closes projector window if open
+   * - Clears all references
+   *
+   * Call this when the application is shutting down.
+   */
+  dispose() {
+    // Close BroadcastChannel
+    if (this.channel) {
+      try {
+        this.channel.close();
+      } catch (_) {}
+      this.channel = null;
+    }
+
+    // Remove window event listeners
+    if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+      if (this._messageHandler) {
+        window.removeEventListener('message', this._messageHandler);
+        this._messageHandler = null;
+      }
+      if (this._storageHandler) {
+        window.removeEventListener('storage', this._storageHandler);
+        this._storageHandler = null;
+      }
+    }
+
+    // Close projector window if open
+    if (this.projectorWindow && !this.projectorWindow.closed) {
+      try {
+        this.projectorWindow.close();
+      } catch (_) {}
+    }
+    this.projectorWindow = null;
+    this.controlWindow = null;
+
+    // Clear status listeners
+    if (this._statusListeners) {
+      this._statusListeners.clear();
+    }
+
+    // Clear references
+    this.sceneApi = null;
+    this.remoteId = null;
+    this.remoteRole = null;
+    this.connected = false;
+    this._remoteFeatures = null;
+    this._lastSnapshot = null;
+    this._lastAppliedParams = null;
   }
 }

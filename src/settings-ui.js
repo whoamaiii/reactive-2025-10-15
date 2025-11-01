@@ -2203,5 +2203,35 @@ export function initSettingsUI({ sceneApi, audioEngine, presetManager, onScreens
     }
   }
 
-  return { open, close, updateFpsLabel, updateBpmLabel, updateTapAndDrift, updateDriftDetails, updateSyncStatus, updateBeatIndicator };
+  /**
+   * Dispose and cleanup settings UI resources.
+   *
+   * Removes event listeners and clears references to prevent memory leaks.
+   */
+  function dispose() {
+    // Remove window-level event listener
+    if (handleGlobalKeydown) {
+      window.removeEventListener('keydown', handleGlobalKeydown);
+    }
+
+    // Remove button event listeners
+    if (btnOpen) {
+      btnOpen.removeEventListener('click', open);
+    }
+    if (overlay) {
+      overlay.removeEventListener('click', close);
+    }
+    if (btnClose) {
+      btnClose.removeEventListener('click', close);
+    }
+    if (btnCloseFooter) {
+      btnCloseFooter.removeEventListener('click', close);
+    }
+
+    // Clear UI references
+    // Note: Most event listeners are attached to elements that will be
+    // garbage collected when the elements are removed from the DOM
+  }
+
+  return { open, close, updateFpsLabel, updateBpmLabel, updateTapAndDrift, updateDriftDetails, updateSyncStatus, updateBeatIndicator, dispose };
 }

@@ -1981,4 +1981,85 @@ export class AudioEngine {
       beatGrid: this.beatGrid,
     };
   }
+
+  /**
+   * Dispose and cleanup all audio resources.
+   *
+   * This method properly cleans up the AudioEngine to prevent memory leaks:
+   * - Stops all audio sources (files, streams)
+   * - Disconnects all audio nodes
+   * - Closes the AudioContext
+   * - Terminates workers
+   * - Clears all references
+   *
+   * Call this when the application is shutting down or the audio engine
+   * is no longer needed.
+   */
+  async dispose() {
+    // Stop all audio sources first
+    this.stop();
+
+    // Disconnect and clear audio nodes
+    try {
+      if (this.gainNode) {
+        this.gainNode.disconnect();
+        this.gainNode = null;
+      }
+    } catch (_) {}
+
+    try {
+      if (this.analyser) {
+        this.analyser.disconnect();
+        this.analyser = null;
+      }
+    } catch (_) {}
+
+    try {
+      if (this.workletNode) {
+        this.workletNode.disconnect();
+        this.workletNode = null;
+      }
+    } catch (_) {}
+
+    try {
+      if (this.source) {
+        this.source.disconnect();
+        this.source = null;
+      }
+    } catch (_) {}
+
+    // Terminate Aubio worker if exists
+    if (this._aubioWorker) {
+      try {
+        this._aubioWorker.terminate();
+      } catch (_) {}
+      this._aubioWorker = null;
+    }
+
+    // Close the AudioContext (critical for preventing audio context leaks)
+    if (this.ctx && this.ctx.state !== 'closed') {
+      try {
+        await this.ctx.close();
+      } catch (_) {}
+    }
+    this.ctx = null;
+
+    // Clear data arrays
+    this.freqData = null;
+    this.timeData = null;
+    this.timeDataFloat = null;
+    this.prevMag = null;
+    this._prevMagBass = null;
+
+    // Clear Meyda instance
+    this.meyda = null;
+    this._meydaPromise = null;
+
+    // Clear all other references
+    this.activeStream = null;
+    this.fluxHistory = [];
+    this.bassFluxHistory = [];
+    this._autoBassOnBeats = [];
+    this._autoCentroidNegOnBeats = [];
+  }
 }

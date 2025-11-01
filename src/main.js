@@ -323,11 +323,26 @@ function sendFeaturesOverWs(features, nowMs) {
 // Window Event Handlers
 // =====================
 
+// Store event handler references for proper cleanup
+const eventHandlers = {
+  resize: sceneApi.onResize,
+  mousemove: sceneApi.onMouseMove,
+  visibilitychange: null,
+  focus: null,
+  pointerdown: null,
+  dragenter: null,
+  dragover: null,
+  dragleave: null,
+  drop: null,
+  dropHandler: null,
+  systemAudioHelp: null,
+};
+
 // Handle window resize - update the 3D scene to match new window size
-window.addEventListener('resize', sceneApi.onResize);
+window.addEventListener('resize', eventHandlers.resize);
 
 // Handle mouse movement - update camera/interaction based on mouse position
-window.addEventListener('mousemove', sceneApi.onMouseMove);
+window.addEventListener('mousemove', eventHandlers.mousemove);
 
 // Pause/Resume Management
 // ======================
@@ -337,7 +352,7 @@ window.addEventListener('mousemove', sceneApi.onMouseMove);
 let isPaused = false; // Track if we're currently paused
 
 // Listen for visibility changes (tab hidden/shown)
-document.addEventListener('visibilitychange', async () => {
+eventHandlers.visibilitychange = async () => {
   if (document.visibilityState === 'hidden') {
     // Tab was hidden - pause everything
     isPaused = true;
@@ -349,7 +364,8 @@ document.addEventListener('visibilitychange', async () => {
     lastTime = performance.now(); // Reset time tracking
     try { await audio.ctx?.resume?.(); } catch (_) {} // Resume audio context
   }
-});
+};
+document.addEventListener('visibilitychange', eventHandlers.visibilitychange);
 
 // Resume Watchdog
 // ===============
@@ -357,14 +373,16 @@ document.addEventListener('visibilitychange', async () => {
 // These event handlers aggressively resume it when the user interacts with the page.
 
 // Resume on window focus (user clicks back into the tab)
-window.addEventListener('focus', async () => {
+eventHandlers.focus = async () => {
   try { await audio.ctx?.resume?.(); } catch (_) {}
-});
+};
+window.addEventListener('focus', eventHandlers.focus);
 
 // Resume on pointer down (user clicks/taps anywhere)
-window.addEventListener('pointerdown', async () => {
+eventHandlers.pointerdown = async () => {
   try { await audio.ctx?.resume?.(); } catch (_) {}
-});
+};
+window.addEventListener('pointerdown', eventHandlers.pointerdown);
 
 // Main Animation Loop
 // ===================
@@ -386,9 +404,12 @@ let autoLast = performance.now(); // Last auto-resolution check time
 // Resume watchdog tracking
 let resumeWatchLastAttempt = 0; // Last time we tried to resume audio context
 
+// Animation frame ID for cleanup
+let animationFrameId = null;
+
 /**
  * Main animation loop function.
- * 
+ *
  * This function runs continuously, updating:
  * - Audio analysis (extracting features from audio)
  * - 3D scene (animating visuals based on audio features)
@@ -399,7 +420,7 @@ let resumeWatchLastAttempt = 0; // Last time we tried to resume audio context
  */
 function animate() {
   // Schedule the next frame (this creates the loop)
-  requestAnimationFrame(animate);
+  animationFrameId = requestAnimationFrame(animate);
   
   const now = performance.now();
   
@@ -567,28 +588,31 @@ animate();
 
 const dropOverlay = document.getElementById('drop-overlay');
 
-// Show overlay when dragging files over the window
-['dragenter', 'dragover'].forEach(evt => {
-  window.addEventListener(evt, (e) => {
-    e.preventDefault(); // Prevent default browser behavior
-    if (dropOverlay) dropOverlay.classList.add('active'); // Show overlay
-  });
-});
-
-// Hide overlay when dragging leaves or file is dropped
-['dragleave', 'drop'].forEach(evt => {
-  window.addEventListener(evt, (e) => {
-    e.preventDefault(); // Prevent default browser behavior
-    if (dropOverlay) dropOverlay.classList.remove('active'); // Hide overlay
-  });
-});
-
-// Handle file drop
-window.addEventListener('drop', async (e) => {
+// Drag-and-drop handlers
+eventHandlers.dragenter = (e) => {
   e.preventDefault();
-  const file = e.dataTransfer?.files?.[0]; // Get first dropped file
-  
-  // Only process audio files
+  if (dropOverlay) dropOverlay.classList.add('active');
+};
+
+eventHandlers.dragover = (e) => {
+  e.preventDefault();
+  if (dropOverlay) dropOverlay.classList.add('active');
+};
+
+eventHandlers.dragleave = (e) => {
+  e.preventDefault();
+  if (dropOverlay) dropOverlay.classList.remove('active');
+};
+
+eventHandlers.drop = (e) => {
+  e.preventDefault();
+  if (dropOverlay) dropOverlay.classList.remove('active');
+};
+
+eventHandlers.dropHandler = async (e) => {
+  e.preventDefault();
+  const file = e.dataTransfer?.files?.[0];
+
   if (file && file.type.startsWith('audio/')) {
     try {
       await audio.loadFile(file);
@@ -597,21 +621,141 @@ window.addEventListener('drop', async (e) => {
       try { showToast('Audio file load failed.', 2600); } catch(_) {}
     }
   }
-});
+};
+
+// Register drag-and-drop event listeners
+window.addEventListener('dragenter', eventHandlers.dragenter);
+window.addEventListener('dragover', eventHandlers.dragover);
+window.addEventListener('dragleave', eventHandlers.dragleave);
+window.addEventListener('drop', eventHandlers.drop);
+window.addEventListener('drop', eventHandlers.dropHandler);
 
 // System Audio Help Button
 // ========================
 // Shows helpful instructions for capturing system audio on different platforms
 
-document.getElementById('open-system-audio-help')?.addEventListener('click', () => {
+eventHandlers.systemAudioHelp = () => {
   // Detect if we're on macOS
   const isMac = /Mac/i.test(navigator.userAgent || '') || /Mac/i.test(navigator.platform || '');
-  
+
   // Show platform-specific instructions
   const msg = isMac
     ? 'macOS: For one tab, click "Tab (Chrome)" then enable "Share tab audio".\n\nFor full system audio: Install BlackHole 2ch → in Audio MIDI Setup make a Multi-Output (BlackHole + your speakers) → set Mac Output to that device → in the app pick Mic → BlackHole.\n\nIf capture fails, allow Chrome in System Settings → Privacy & Security → Screen Recording.'
     : 'Click System, then select a tab/window with audio and enable audio sharing. If capture is blocked, allow screen recording permissions for your browser.';
-  
+
   // Try to show as toast, fall back to alert if toast fails
   try { showToast(msg, 5200); } catch (_) { alert(msg); }
-});
+};
+
+const systemAudioHelpBtn = document.getElementById('open-system-audio-help');
+if (systemAudioHelpBtn) {
+  systemAudioHelpBtn.addEventListener('click', eventHandlers.systemAudioHelp);
+}
+
+// Global Cleanup Function
+// =======================
+// Properly disposes of all resources to prevent memory leaks.
+// This function is called when the page is unloaded.
+
+async function cleanup() {
+  console.log('Cleaning up application resources...');
+
+  // Cancel animation loop
+  if (animationFrameId !== null) {
+    cancelAnimationFrame(animationFrameId);
+    animationFrameId = null;
+  }
+
+  // Close WebSocket connection
+  if (featureWs) {
+    try {
+      if (featureWs.readyState === WebSocket.OPEN || featureWs.readyState === WebSocket.CONNECTING) {
+        featureWs.close();
+      }
+    } catch (_) {}
+    featureWs = null;
+  }
+
+  // Dispose all major components
+  try {
+    if (performancePads && typeof performancePads.dispose === 'function') {
+      performancePads.dispose();
+    }
+  } catch (e) {
+    console.error('Error disposing performance pads:', e);
+  }
+
+  try {
+    if (ui && typeof ui.dispose === 'function') {
+      ui.dispose();
+    }
+  } catch (e) {
+    console.error('Error disposing UI:', e);
+  }
+
+  try {
+    if (sync && typeof sync.dispose === 'function') {
+      sync.dispose();
+    }
+  } catch (e) {
+    console.error('Error disposing sync coordinator:', e);
+  }
+
+  try {
+    if (sceneApi && typeof sceneApi.dispose === 'function') {
+      sceneApi.dispose();
+    }
+  } catch (e) {
+    console.error('Error disposing scene:', e);
+  }
+
+  try {
+    if (audio && typeof audio.dispose === 'function') {
+      await audio.dispose();
+    }
+  } catch (e) {
+    console.error('Error disposing audio engine:', e);
+  }
+
+  // Remove all window event listeners
+  try {
+    window.removeEventListener('resize', eventHandlers.resize);
+    window.removeEventListener('mousemove', eventHandlers.mousemove);
+    if (eventHandlers.visibilitychange) {
+      document.removeEventListener('visibilitychange', eventHandlers.visibilitychange);
+    }
+    if (eventHandlers.focus) {
+      window.removeEventListener('focus', eventHandlers.focus);
+    }
+    if (eventHandlers.pointerdown) {
+      window.removeEventListener('pointerdown', eventHandlers.pointerdown);
+    }
+    if (eventHandlers.dragenter) {
+      window.removeEventListener('dragenter', eventHandlers.dragenter);
+    }
+    if (eventHandlers.dragover) {
+      window.removeEventListener('dragover', eventHandlers.dragover);
+    }
+    if (eventHandlers.dragleave) {
+      window.removeEventListener('dragleave', eventHandlers.dragleave);
+    }
+    if (eventHandlers.drop) {
+      window.removeEventListener('drop', eventHandlers.drop);
+    }
+    if (eventHandlers.dropHandler) {
+      window.removeEventListener('drop', eventHandlers.dropHandler);
+    }
+    if (eventHandlers.systemAudioHelp && systemAudioHelpBtn) {
+      systemAudioHelpBtn.removeEventListener('click', eventHandlers.systemAudioHelp);
+    }
+  } catch (e) {
+    console.error('Error removing event listeners:', e);
+  }
+
+  console.log('Cleanup complete');
+}
+
+// Register cleanup handlers for page unload
+// These ensure cleanup runs when the page is closed or refreshed
+window.addEventListener('beforeunload', cleanup);
+window.addEventListener('pagehide', cleanup);
